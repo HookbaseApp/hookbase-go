@@ -5,7 +5,7 @@ Official Go client library for the [Hookbase](https://hookbase.app) webhook mana
 ## Installation
 
 ```bash
-go get github.com/hookbase/hookbase-go
+go get github.com/HookbaseApp/hookbase-go
 ```
 
 Requires Go 1.21+. Zero external dependencies (stdlib only).
@@ -20,7 +20,7 @@ import (
     "fmt"
     "log"
 
-    hookbase "github.com/hookbase/hookbase-go"
+    hookbase "github.com/HookbaseApp/hookbase-go"
 )
 
 func main() {

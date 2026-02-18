@@ -1,3 +1,3 @@
-module github.com/hookbase/hookbase-go
+module github.com/HookbaseApp/hookbase-go
 
 go 1.21

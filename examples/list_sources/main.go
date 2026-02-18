@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	hookbase "github.com/hookbase/hookbase-go"
+	hookbase "github.com/HookbaseApp/hookbase-go"
 )
 
 func main() {
