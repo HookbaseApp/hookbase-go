@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const sdkVersion = "0.1.0"
+const sdkVersion = "0.2.0"
 
 type transport struct {
 	apiKey     string

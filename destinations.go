@@ -2,6 +2,7 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
@@ -27,6 +28,64 @@ const (
 	AuthCustomHeader AuthType = "custom_header"
 )
 
+// DestinationType represents the type of a destination.
+type DestinationType string
+
+const (
+	DestinationHTTP      DestinationType = "http"
+	DestinationS3        DestinationType = "s3"
+	DestinationR2        DestinationType = "r2"
+	DestinationGCS       DestinationType = "gcs"
+	DestinationAzureBlob DestinationType = "azure_blob"
+)
+
+// S3Config is the configuration for an S3 warehouse destination.
+type S3Config struct {
+	Bucket          string `json:"bucket"`
+	Region          string `json:"region"`
+	AccessKeyID     string `json:"accessKeyId"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	Prefix          string `json:"prefix,omitempty"`
+	FileFormat      string `json:"fileFormat,omitempty"`
+	PartitionBy     string `json:"partitionBy,omitempty"`
+}
+
+// R2Config is the configuration for an R2 warehouse destination.
+type R2Config struct {
+	Bucket      string `json:"bucket"`
+	Prefix      string `json:"prefix,omitempty"`
+	FileFormat  string `json:"fileFormat,omitempty"`
+	PartitionBy string `json:"partitionBy,omitempty"`
+}
+
+// GCSConfig is the configuration for a Google Cloud Storage warehouse destination.
+type GCSConfig struct {
+	Bucket            string `json:"bucket"`
+	ProjectID         string `json:"projectId"`
+	ServiceAccountKey string `json:"serviceAccountKey"`
+	Prefix            string `json:"prefix,omitempty"`
+	FileFormat        string `json:"fileFormat,omitempty"`
+	PartitionBy       string `json:"partitionBy,omitempty"`
+}
+
+// AzureBlobConfig is the configuration for an Azure Blob Storage warehouse destination.
+type AzureBlobConfig struct {
+	AccountName   string `json:"accountName"`
+	AccountKey    string `json:"accountKey"`
+	ContainerName string `json:"containerName"`
+	Prefix        string `json:"prefix,omitempty"`
+	FileFormat    string `json:"fileFormat,omitempty"`
+	PartitionBy   string `json:"partitionBy,omitempty"`
+}
+
+// FieldMapping defines a mapping between source and target fields for warehouse destinations.
+type FieldMapping struct {
+	Source  string `json:"source"`
+	Target  string `json:"target"`
+	Type    string `json:"type"`
+	Default string `json:"default,omitempty"`
+}
+
 // Destination represents a webhook delivery destination.
 type Destination struct {
 	ID              string            `json:"id"`
@@ -34,6 +93,7 @@ type Destination struct {
 	Name            string            `json:"name"`
 	Slug            string            `json:"slug"`
 	Description     *string           `json:"description"`
+	Type            DestinationType   `json:"type"`
 	URL             string            `json:"url"`
 	Method          HTTPMethod        `json:"method"`
 	Headers         JSONString[map[string]string] `json:"headers"`
@@ -45,6 +105,8 @@ type Destination struct {
 	RateLimit       *int              `json:"rateLimit"`
 	RateLimitWindow *int              `json:"rateLimitWindow"`
 	IsActive        FlexBool          `json:"isActive"`
+	Config          json.RawMessage   `json:"config"`
+	FieldMapping    []FieldMapping    `json:"fieldMapping"`
 	DeliveryCount   int               `json:"deliveryCount"`
 	LastDeliveryAt  *string           `json:"lastDeliveryAt"`
 	CreatedAt       string            `json:"createdAt"`
@@ -56,7 +118,8 @@ type CreateDestinationParams struct {
 	Name            string                 `json:"name"`
 	Slug            *string                `json:"slug,omitempty"`
 	Description     *string                `json:"description,omitempty"`
-	URL             string                 `json:"url"`
+	Type            *DestinationType       `json:"type,omitempty"`
+	URL             string                 `json:"url,omitempty"`
 	Method          *HTTPMethod            `json:"method,omitempty"`
 	Headers         map[string]string      `json:"headers,omitempty"`
 	AuthType        *AuthType              `json:"authType,omitempty"`
@@ -66,6 +129,8 @@ type CreateDestinationParams struct {
 	RetryInterval   *int                   `json:"retryInterval,omitempty"`
 	RateLimit       *int                   `json:"rateLimit,omitempty"`
 	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
+	Config          interface{}            `json:"config,omitempty"`
+	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
 }
 
 // UpdateDestinationParams are the parameters for updating a destination.
@@ -83,6 +148,8 @@ type UpdateDestinationParams struct {
 	RateLimit       *int                   `json:"rateLimit,omitempty"`
 	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
 	IsActive        *bool                  `json:"isActive,omitempty"`
+	Config          interface{}            `json:"config,omitempty"`
+	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
 }
 
 // ListDestinationsParams are the parameters for listing destinations.

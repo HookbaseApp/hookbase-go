@@ -149,9 +149,10 @@ func TestDestinationsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"destinations": []map[string]interface{}{
-				{"id": "dst_1", "name": "My Webhook", "slug": "my-webhook", "url": "https://example.com/webhook",
+				{"id": "dst_1", "name": "My Webhook", "slug": "my-webhook", "type": "http", "url": "https://example.com/webhook",
 					"method": "POST", "authType": "none", "isActive": true, "timeout": 30,
 					"retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
+					"config": nil, "fieldMapping": nil,
 					"createdAt": "2024-01-01", "updatedAt": "2024-01-01"},
 			},
 			"pagination": map[string]interface{}{"total": 1, "page": 1, "pageSize": 20},
@@ -169,6 +170,112 @@ func TestDestinationsList(t *testing.T) {
 	}
 	if page.Data[0].URL != "https://example.com/webhook" {
 		t.Errorf("expected url, got %s", page.Data[0].URL)
+	}
+	if page.Data[0].Type != DestinationHTTP {
+		t.Errorf("expected http type, got %s", page.Data[0].Type)
+	}
+}
+
+func TestDestinationsWarehouse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"destination": map[string]interface{}{
+					"id": "dst_s3", "name": "S3 Archive", "slug": "s3-archive", "type": "s3",
+					"url": "", "method": "POST", "authType": "none", "isActive": true,
+					"timeout": 30, "retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
+					"config": map[string]interface{}{
+						"bucket": "my-webhooks", "region": "us-east-1",
+						"accessKeyId": "AKIA...", "secretAccessKey": "***",
+						"prefix": "events/", "fileFormat": "jsonl", "partitionBy": "date",
+					},
+					"fieldMapping": []map[string]interface{}{
+						{"source": "$.id", "target": "event_id", "type": "string"},
+						{"source": "$.payload", "target": "data", "type": "json"},
+					},
+					"createdAt": "2024-01-01", "updatedAt": "2024-01-01",
+				},
+			})
+		case "POST":
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["type"] != "s3" {
+				t.Errorf("expected type s3, got %v", body["type"])
+			}
+			config, ok := body["config"].(map[string]interface{})
+			if !ok {
+				t.Fatal("expected config object")
+			}
+			if config["bucket"] != "my-webhooks" {
+				t.Errorf("expected bucket my-webhooks, got %v", config["bucket"])
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"destination": map[string]interface{}{
+					"id": "dst_s3", "name": "S3 Archive", "slug": "s3-archive", "type": "s3",
+					"url": "", "method": "POST", "authType": "none", "isActive": true,
+					"timeout": 30, "retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
+					"config": body["config"], "fieldMapping": body["fieldMapping"],
+					"createdAt": "2024-01-01", "updatedAt": "2024-01-01",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	client := New("test_key", WithBaseURL(server.URL))
+
+	// Test Get warehouse destination
+	dest, err := client.Destinations.Get(context.Background(), "dst_s3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dest.Type != DestinationS3 {
+		t.Errorf("expected s3 type, got %s", dest.Type)
+	}
+	if dest.Config == nil {
+		t.Fatal("expected non-nil config")
+	}
+	var s3Conf S3Config
+	if err := json.Unmarshal(dest.Config, &s3Conf); err != nil {
+		t.Fatalf("failed to unmarshal S3 config: %v", err)
+	}
+	if s3Conf.Bucket != "my-webhooks" {
+		t.Errorf("expected bucket my-webhooks, got %s", s3Conf.Bucket)
+	}
+	if s3Conf.FileFormat != "jsonl" {
+		t.Errorf("expected fileFormat jsonl, got %s", s3Conf.FileFormat)
+	}
+	if len(dest.FieldMapping) != 2 {
+		t.Fatalf("expected 2 field mappings, got %d", len(dest.FieldMapping))
+	}
+	if dest.FieldMapping[0].Source != "$.id" {
+		t.Errorf("expected source $.id, got %s", dest.FieldMapping[0].Source)
+	}
+	if dest.FieldMapping[1].Type != "json" {
+		t.Errorf("expected type json, got %s", dest.FieldMapping[1].Type)
+	}
+
+	// Test Create warehouse destination
+	s3Type := DestinationS3
+	created, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "S3 Archive",
+		Type: &s3Type,
+		Config: S3Config{
+			Bucket:         "my-webhooks",
+			Region:         "us-east-1",
+			AccessKeyID:    "AKIA...",
+			SecretAccessKey: "***",
+		},
+		FieldMapping: []FieldMapping{
+			{Source: "$.id", Target: "event_id", Type: "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on create: %v", err)
+	}
+	if created.Type != DestinationS3 {
+		t.Errorf("expected s3 type on created, got %s", created.Type)
 	}
 }
 
