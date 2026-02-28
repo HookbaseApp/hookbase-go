@@ -35,6 +35,7 @@ type Endpoint struct {
 	RateLimitPeriod  *int                   `json:"rateLimitPeriod"`
 	Headers          []EndpointHeader       `json:"headers"`
 	Metadata         map[string]interface{} `json:"metadata"`
+	UseStaticIP      FlexBool               `json:"useStaticIp"`
 	TotalMessages    int                    `json:"totalMessages"`
 	TotalSuccesses   int                    `json:"totalSuccesses"`
 	TotalFailures    int                    `json:"totalFailures"`
@@ -61,6 +62,7 @@ type CreateEndpointParams struct {
 	RateLimitPeriod *int                   `json:"rateLimitPeriod,omitempty"`
 	Headers         map[string]string      `json:"headers,omitempty"`
 	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
 }
 
 // UpdateEndpointParams are the parameters for updating an endpoint.
@@ -73,6 +75,7 @@ type UpdateEndpointParams struct {
 	RateLimitPeriod *int                   `json:"rateLimitPeriod,omitempty"`
 	Headers         map[string]string      `json:"headers,omitempty"`
 	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
 }
 
 // ListEndpointsParams are the parameters for listing endpoints.

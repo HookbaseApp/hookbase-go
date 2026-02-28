@@ -105,6 +105,7 @@ type Destination struct {
 	RateLimit       *int              `json:"rateLimit"`
 	RateLimitWindow *int              `json:"rateLimitWindow"`
 	IsActive        FlexBool          `json:"isActive"`
+	UseStaticIP     FlexBool          `json:"useStaticIp"`
 	Config          json.RawMessage   `json:"config"`
 	FieldMapping    []FieldMapping    `json:"fieldMapping"`
 	DeliveryCount   int               `json:"deliveryCount"`
@@ -131,6 +132,7 @@ type CreateDestinationParams struct {
 	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
 	Config          interface{}            `json:"config,omitempty"`
 	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
+	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
 }
 
 // UpdateDestinationParams are the parameters for updating a destination.
@@ -150,6 +152,7 @@ type UpdateDestinationParams struct {
 	IsActive        *bool                  `json:"isActive,omitempty"`
 	Config          interface{}            `json:"config,omitempty"`
 	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
+	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
 }
 
 // ListDestinationsParams are the parameters for listing destinations.
