@@ -106,9 +106,11 @@ type Destination struct {
 	RateLimitWindow *int              `json:"rateLimitWindow"`
 	IsActive        FlexBool          `json:"isActive"`
 	UseStaticIP     FlexBool          `json:"useStaticIp"`
-	Config          json.RawMessage   `json:"config"`
-	FieldMapping    []FieldMapping    `json:"fieldMapping"`
-	DeliveryCount   int               `json:"deliveryCount"`
+	Config             json.RawMessage   `json:"config"`
+	FieldMapping       []FieldMapping    `json:"fieldMapping"`
+	BatchSize          int               `json:"batchSize,omitempty"`
+	BatchWindowSeconds int               `json:"batchWindowSeconds,omitempty"`
+	DeliveryCount      int               `json:"deliveryCount"`
 	LastDeliveryAt  *string           `json:"lastDeliveryAt"`
 	CreatedAt       string            `json:"createdAt"`
 	UpdatedAt       string            `json:"updatedAt"`
@@ -130,9 +132,11 @@ type CreateDestinationParams struct {
 	RetryInterval   *int                   `json:"retryInterval,omitempty"`
 	RateLimit       *int                   `json:"rateLimit,omitempty"`
 	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
-	Config          interface{}            `json:"config,omitempty"`
-	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
-	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
+	Config             interface{}            `json:"config,omitempty"`
+	FieldMapping       []FieldMapping         `json:"fieldMapping,omitempty"`
+	UseStaticIP        *bool                  `json:"useStaticIp,omitempty"`
+	BatchSize          *int                   `json:"batchSize,omitempty"`
+	BatchWindowSeconds *int                   `json:"batchWindowSeconds,omitempty"`
 }
 
 // UpdateDestinationParams are the parameters for updating a destination.
@@ -150,9 +154,11 @@ type UpdateDestinationParams struct {
 	RateLimit       *int                   `json:"rateLimit,omitempty"`
 	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
 	IsActive        *bool                  `json:"isActive,omitempty"`
-	Config          interface{}            `json:"config,omitempty"`
-	FieldMapping    []FieldMapping         `json:"fieldMapping,omitempty"`
-	UseStaticIP     *bool                  `json:"useStaticIp,omitempty"`
+	Config             interface{}            `json:"config,omitempty"`
+	FieldMapping       []FieldMapping         `json:"fieldMapping,omitempty"`
+	UseStaticIP        *bool                  `json:"useStaticIp,omitempty"`
+	BatchSize          *int                   `json:"batchSize,omitempty"`
+	BatchWindowSeconds *int                   `json:"batchWindowSeconds,omitempty"`
 }
 
 // ListDestinationsParams are the parameters for listing destinations.
