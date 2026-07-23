@@ -63,11 +63,13 @@ type Source struct {
 	RateLimit       *int           `json:"rateLimit"`
 	RateLimitWindow *int           `json:"rateLimitWindow"`
 	// TransientMode - payloads never stored at rest (HIPAA/GDPR compliance)
-	TransientMode   FlexBool       `json:"transientMode"`
-	EventCount      int            `json:"eventCount"`
-	LastEventAt     *string        `json:"lastEventAt"`
-	CreatedAt       string         `json:"createdAt"`
-	UpdatedAt       string         `json:"updatedAt"`
+	TransientMode FlexBool `json:"transientMode"`
+	// AllowedMethods - HTTP verbs the ingest endpoint accepts. Empty means any method.
+	AllowedMethods []string `json:"allowedMethods"`
+	EventCount     int      `json:"eventCount"`
+	LastEventAt    *string  `json:"lastEventAt"`
+	CreatedAt      string   `json:"createdAt"`
+	UpdatedAt      string   `json:"updatedAt"`
 }
 
 // CreateSourceParams are the parameters for creating a source.
@@ -86,6 +88,8 @@ type CreateSourceParams struct {
 	RateLimit       *int            `json:"rateLimit,omitempty"`
 	RateLimitWindow *int            `json:"rateLimitWindow,omitempty"`
 	TransientMode   *bool           `json:"transientMode,omitempty"`
+	// AllowedMethods restricts the ingest endpoint to these HTTP verbs. Omit for any method.
+	AllowedMethods []string `json:"allowedMethods,omitempty"`
 }
 
 // UpdateSourceParams are the parameters for updating a source.
@@ -103,6 +107,8 @@ type UpdateSourceParams struct {
 	RateLimit       *int           `json:"rateLimit,omitempty"`
 	RateLimitWindow *int           `json:"rateLimitWindow,omitempty"`
 	TransientMode   *bool          `json:"transientMode,omitempty"`
+	// AllowedMethods restricts the ingest endpoint to these HTTP verbs. Omit for any method.
+	AllowedMethods []string `json:"allowedMethods,omitempty"`
 }
 
 // ListSourcesParams are the parameters for listing sources.
