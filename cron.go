@@ -7,22 +7,23 @@ import (
 
 // CronJob represents a scheduled cron job.
 type CronJob struct {
-	ID             string  `json:"id"`
-	OrganizationID string  `json:"organizationId"`
-	Name           string  `json:"name"`
-	Description    *string `json:"description"`
-	Schedule       string  `json:"cronExpression"`
-	URL            string  `json:"url"`
-	Method         string  `json:"method"`
+	ID             string                        `json:"id"`
+	OrganizationID string                        `json:"organizationId"`
+	Name           string                        `json:"name"`
+	Description    *string                       `json:"description"`
+	Schedule       string                        `json:"cronExpression"`
+	URL            string                        `json:"url"`
+	Method         string                        `json:"method"`
 	Headers        JSONString[map[string]string] `json:"headers"`
-	Body           *string `json:"body"`
-	Timezone       string  `json:"timezone"`
-	IsActive       FlexBool `json:"isActive"`
-	LastRunAt      *string `json:"lastRunAt"`
-	NextRunAt      *string `json:"nextRunAt"`
-	LastStatus     *string `json:"lastStatus"`
-	CreatedAt      string  `json:"createdAt"`
-	UpdatedAt      string  `json:"updatedAt"`
+	Body           *string                       `json:"body"`
+	Timezone       string                        `json:"timezone"`
+	IsActive       FlexBool                      `json:"isActive"`
+	UseStaticIP    FlexBool                      `json:"useStaticIp"`
+	LastRunAt      *string                       `json:"lastRunAt"`
+	NextRunAt      *string                       `json:"nextRunAt"`
+	LastStatus     *string                       `json:"lastStatus"`
+	CreatedAt      string                        `json:"createdAt"`
+	UpdatedAt      string                        `json:"updatedAt"`
 }
 
 // CreateCronParams are the parameters for creating a cron job.
@@ -36,6 +37,7 @@ type CreateCronParams struct {
 	Body        *string           `json:"body,omitempty"`
 	Timezone    *string           `json:"timezone,omitempty"`
 	IsActive    *bool             `json:"isActive,omitempty"`
+	UseStaticIP *bool             `json:"useStaticIp,omitempty"`
 }
 
 // UpdateCronParams are the parameters for updating a cron job.
@@ -49,6 +51,7 @@ type UpdateCronParams struct {
 	Body        *string           `json:"body,omitempty"`
 	Timezone    *string           `json:"timezone,omitempty"`
 	IsActive    *bool             `json:"isActive,omitempty"`
+	UseStaticIP *bool             `json:"useStaticIp,omitempty"`
 }
 
 // CronGroup represents a group of cron jobs.
