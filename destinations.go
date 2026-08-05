@@ -86,52 +86,63 @@ type FieldMapping struct {
 	Default string `json:"default,omitempty"`
 }
 
+// Throttle configures outbound delivery throttling for a destination.
+//
+// Mode is one of "off", "rate", or "concurrency". When Mode is "rate",
+// RateLimit and RateUnit are required. When Mode is "concurrency",
+// MaxConcurrency is required. QueueLimit is optional in both modes.
+type Throttle struct {
+	Mode           string  `json:"mode"`
+	RateLimit      *int    `json:"rateLimit,omitempty"`
+	RateUnit       *string `json:"rateUnit,omitempty"`
+	MaxConcurrency *int    `json:"maxConcurrency,omitempty"`
+	QueueLimit     *int    `json:"queueLimit,omitempty"`
+}
+
 // Destination represents a webhook delivery destination.
 type Destination struct {
-	ID              string            `json:"id"`
-	OrganizationID  string            `json:"organizationId"`
-	Name            string            `json:"name"`
-	Slug            string            `json:"slug"`
-	Description     *string           `json:"description"`
-	Type            DestinationType   `json:"type"`
-	URL             string            `json:"url"`
-	Method          HTTPMethod        `json:"method"`
-	Headers         JSONString[map[string]string] `json:"headers"`
-	AuthType        AuthType          `json:"authType"`
-	AuthConfig      JSONString[map[string]interface{}] `json:"authConfig"`
-	Timeout         int               `json:"timeout"`
-	RetryCount      int               `json:"retryCount"`
-	RetryInterval   int               `json:"retryInterval"`
-	RateLimit       *int              `json:"rateLimit"`
-	RateLimitWindow *int              `json:"rateLimitWindow"`
-	IsActive        FlexBool          `json:"isActive"`
-	UseStaticIP     FlexBool          `json:"useStaticIp"`
-	Config             json.RawMessage   `json:"config"`
-	FieldMapping       []FieldMapping    `json:"fieldMapping"`
-	BatchSize          int               `json:"batchSize,omitempty"`
-	BatchWindowSeconds int               `json:"batchWindowSeconds,omitempty"`
-	DeliveryCount      int               `json:"deliveryCount"`
-	LastDeliveryAt  *string           `json:"lastDeliveryAt"`
-	CreatedAt       string            `json:"createdAt"`
-	UpdatedAt       string            `json:"updatedAt"`
+	ID                 string                             `json:"id"`
+	OrganizationID     string                             `json:"organizationId"`
+	Name               string                             `json:"name"`
+	Slug               string                             `json:"slug"`
+	Description        *string                            `json:"description"`
+	Type               DestinationType                    `json:"type"`
+	URL                string                             `json:"url"`
+	Method             HTTPMethod                         `json:"method"`
+	Headers            JSONString[map[string]string]      `json:"headers"`
+	AuthType           AuthType                           `json:"authType"`
+	AuthConfig         JSONString[map[string]interface{}] `json:"authConfig"`
+	Timeout            int                                `json:"timeout"`
+	RetryCount         int                                `json:"retryCount"`
+	RetryInterval      int                                `json:"retryInterval"`
+	Throttle           *Throttle                          `json:"throttle,omitempty"`
+	IsActive           FlexBool                           `json:"isActive"`
+	UseStaticIP        FlexBool                           `json:"useStaticIp"`
+	Config             json.RawMessage                    `json:"config"`
+	FieldMapping       []FieldMapping                     `json:"fieldMapping"`
+	BatchSize          int                                `json:"batchSize,omitempty"`
+	BatchWindowSeconds int                                `json:"batchWindowSeconds,omitempty"`
+	DeliveryCount      int                                `json:"deliveryCount"`
+	LastDeliveryAt     *string                            `json:"lastDeliveryAt"`
+	CreatedAt          string                             `json:"createdAt"`
+	UpdatedAt          string                             `json:"updatedAt"`
 }
 
 // CreateDestinationParams are the parameters for creating a destination.
 type CreateDestinationParams struct {
-	Name            string                 `json:"name"`
-	Slug            *string                `json:"slug,omitempty"`
-	Description     *string                `json:"description,omitempty"`
-	Type            *DestinationType       `json:"type,omitempty"`
-	URL             string                 `json:"url,omitempty"`
-	Method          *HTTPMethod            `json:"method,omitempty"`
-	Headers         map[string]string      `json:"headers,omitempty"`
-	AuthType        *AuthType              `json:"authType,omitempty"`
-	AuthConfig      map[string]interface{} `json:"authConfig,omitempty"`
-	Timeout         *int                   `json:"timeout,omitempty"`
-	RetryCount      *int                   `json:"retryCount,omitempty"`
-	RetryInterval   *int                   `json:"retryInterval,omitempty"`
-	RateLimit       *int                   `json:"rateLimit,omitempty"`
-	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
+	Name               string                 `json:"name"`
+	Slug               *string                `json:"slug,omitempty"`
+	Description        *string                `json:"description,omitempty"`
+	Type               *DestinationType       `json:"type,omitempty"`
+	URL                string                 `json:"url,omitempty"`
+	Method             *HTTPMethod            `json:"method,omitempty"`
+	Headers            map[string]string      `json:"headers,omitempty"`
+	AuthType           *AuthType              `json:"authType,omitempty"`
+	AuthConfig         map[string]interface{} `json:"authConfig,omitempty"`
+	Timeout            *int                   `json:"timeout,omitempty"`
+	RetryCount         *int                   `json:"retryCount,omitempty"`
+	RetryInterval      *int                   `json:"retryInterval,omitempty"`
+	Throttle           *Throttle              `json:"throttle,omitempty"`
 	Config             interface{}            `json:"config,omitempty"`
 	FieldMapping       []FieldMapping         `json:"fieldMapping,omitempty"`
 	UseStaticIP        *bool                  `json:"useStaticIp,omitempty"`
@@ -141,19 +152,18 @@ type CreateDestinationParams struct {
 
 // UpdateDestinationParams are the parameters for updating a destination.
 type UpdateDestinationParams struct {
-	Name            *string                `json:"name,omitempty"`
-	Description     *string                `json:"description,omitempty"`
-	URL             *string                `json:"url,omitempty"`
-	Method          *HTTPMethod            `json:"method,omitempty"`
-	Headers         map[string]string      `json:"headers,omitempty"`
-	AuthType        *AuthType              `json:"authType,omitempty"`
-	AuthConfig      map[string]interface{} `json:"authConfig,omitempty"`
-	Timeout         *int                   `json:"timeout,omitempty"`
-	RetryCount      *int                   `json:"retryCount,omitempty"`
-	RetryInterval   *int                   `json:"retryInterval,omitempty"`
-	RateLimit       *int                   `json:"rateLimit,omitempty"`
-	RateLimitWindow *int                   `json:"rateLimitWindow,omitempty"`
-	IsActive        *bool                  `json:"isActive,omitempty"`
+	Name               *string                `json:"name,omitempty"`
+	Description        *string                `json:"description,omitempty"`
+	URL                *string                `json:"url,omitempty"`
+	Method             *HTTPMethod            `json:"method,omitempty"`
+	Headers            map[string]string      `json:"headers,omitempty"`
+	AuthType           *AuthType              `json:"authType,omitempty"`
+	AuthConfig         map[string]interface{} `json:"authConfig,omitempty"`
+	Timeout            *int                   `json:"timeout,omitempty"`
+	RetryCount         *int                   `json:"retryCount,omitempty"`
+	RetryInterval      *int                   `json:"retryInterval,omitempty"`
+	Throttle           *Throttle              `json:"throttle,omitempty"`
+	IsActive           *bool                  `json:"isActive,omitempty"`
 	Config             interface{}            `json:"config,omitempty"`
 	FieldMapping       []FieldMapping         `json:"fieldMapping,omitempty"`
 	UseStaticIP        *bool                  `json:"useStaticIp,omitempty"`
