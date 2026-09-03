@@ -11,13 +11,20 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+// ErrorDetails contains the structured validation details the API returns
+// alongside an error message (top-level `details` field of the response body).
+type ErrorDetails struct {
+	FormErrors  []string            `json:"formErrors"`
+	FieldErrors map[string][]string `json:"fieldErrors"`
+}
+
 // APIError is returned when the API responds with an error status code.
 type APIError struct {
 	Message   string
 	Status    int
 	Code      string
 	RequestID string
-	Details   map[string]interface{}
+	Details   *ErrorDetails
 }
 
 func (e *APIError) Error() string {

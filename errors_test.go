@@ -20,30 +20,39 @@ func TestErrorTypes(t *testing.T) {
 		{
 			name:   "401 authentication error",
 			status: 401,
-			body:   map[string]interface{}{"error": map[string]interface{}{"message": "Invalid API key", "code": "authentication_error"}},
+			body:   map[string]interface{}{"error": "Invalid API key", "code": "authentication_error"},
 			checkType: func(err error) bool {
 				var e *AuthenticationError
-				return errors.As(err, &e)
+				if !errors.As(err, &e) {
+					return false
+				}
+				return e.Message == "Invalid API key" && e.Code == "authentication_error"
 			},
 			wantStatus: 401,
 		},
 		{
 			name:   "403 forbidden error",
 			status: 403,
-			body:   map[string]interface{}{"error": map[string]interface{}{"message": "Access denied", "code": "forbidden"}},
+			body:   map[string]interface{}{"error": "Access denied", "code": "forbidden"},
 			checkType: func(err error) bool {
 				var e *ForbiddenError
-				return errors.As(err, &e)
+				if !errors.As(err, &e) {
+					return false
+				}
+				return e.Message == "Access denied" && e.Code == "forbidden"
 			},
 			wantStatus: 403,
 		},
 		{
 			name:   "404 not found error",
 			status: 404,
-			body:   map[string]interface{}{"error": map[string]interface{}{"message": "Source not found", "code": "not_found"}},
+			body:   map[string]interface{}{"error": "Source not found", "code": "not_found"},
 			checkType: func(err error) bool {
 				var e *NotFoundError
-				return errors.As(err, &e)
+				if !errors.As(err, &e) {
+					return false
+				}
+				return e.Message == "Source not found" && e.Code == "not_found"
 			},
 			wantStatus: 404,
 		},
@@ -51,35 +60,47 @@ func TestErrorTypes(t *testing.T) {
 			name:   "400 validation error",
 			status: 400,
 			body: map[string]interface{}{
-				"error": map[string]interface{}{
-					"message":          "Validation failed",
-					"code":             "validation_error",
-					"validationErrors": map[string]interface{}{"name": []interface{}{"required"}},
+				"error": "Validation failed",
+				"code":  "validation_error",
+				"details": map[string]interface{}{
+					"fieldErrors": map[string]interface{}{"name": []interface{}{"required"}},
 				},
 			},
 			checkType: func(err error) bool {
 				var e *ValidationError
-				return errors.As(err, &e) && len(e.ValidationErrors) > 0
+				if !errors.As(err, &e) {
+					return false
+				}
+				if e.Message != "Validation failed" || e.Code != "validation_error" {
+					return false
+				}
+				if len(e.ValidationErrors) == 0 || len(e.ValidationErrors["name"]) == 0 || e.ValidationErrors["name"][0] != "required" {
+					return false
+				}
+				return e.Details != nil && len(e.Details.FieldErrors["name"]) > 0
 			},
 			wantStatus: 400,
 		},
 		{
 			name:   "429 rate limit error",
 			status: 429,
-			body:   map[string]interface{}{"error": map[string]interface{}{"message": "Rate limited", "code": "rate_limit_exceeded"}},
+			body:   map[string]interface{}{"error": "Rate limited", "code": "rate_limit_exceeded"},
 			checkType: func(err error) bool {
 				var e *RateLimitError
-				return errors.As(err, &e) && e.RetryAfter > 0
+				if !errors.As(err, &e) {
+					return false
+				}
+				return e.RetryAfter > 0 && e.Message == "Rate limited" && e.Code == "rate_limit_exceeded"
 			},
 			wantStatus: 429,
 		},
 		{
 			name:   "500 server error",
 			status: 500,
-			body:   map[string]interface{}{"error": map[string]interface{}{"message": "Internal error", "code": "internal_error"}},
+			body:   map[string]interface{}{"error": "Internal error", "code": "internal_error"},
 			checkType: func(err error) bool {
 				var e *APIError
-				return errors.As(err, &e) && e.Status == 500
+				return errors.As(err, &e) && e.Status == 500 && e.Message == "Internal error" && e.Code == "internal_error"
 			},
 			wantStatus: 500,
 		},
@@ -121,7 +142,7 @@ func TestNoRetryOnClientErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(404)
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]interface{}{"message": "not found"}})
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "not found"})
 	}))
 	defer server.Close()
 
@@ -141,7 +162,7 @@ func TestRetryOnServerErrors(t *testing.T) {
 		attempts++
 		if attempts <= 2 {
 			w.WriteHeader(500)
-			json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]interface{}{"message": "server error"}})
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "server error"})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{

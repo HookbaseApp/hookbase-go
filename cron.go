@@ -7,51 +7,66 @@ import (
 
 // CronJob represents a scheduled cron job.
 type CronJob struct {
-	ID             string                        `json:"id"`
-	OrganizationID string                        `json:"organizationId"`
-	Name           string                        `json:"name"`
-	Description    *string                       `json:"description"`
-	Schedule       string                        `json:"cronExpression"`
-	URL            string                        `json:"url"`
-	Method         string                        `json:"method"`
-	Headers        JSONString[map[string]string] `json:"headers"`
-	Body           *string                       `json:"body"`
-	Timezone       string                        `json:"timezone"`
-	IsActive       FlexBool                      `json:"isActive"`
-	UseStaticIP    FlexBool                      `json:"useStaticIp"`
-	LastRunAt      *string                       `json:"lastRunAt"`
-	NextRunAt      *string                       `json:"nextRunAt"`
-	LastStatus     *string                       `json:"lastStatus"`
-	CreatedAt      string                        `json:"createdAt"`
-	UpdatedAt      string                        `json:"updatedAt"`
+	ID                  string                        `json:"id"`
+	OrganizationID      string                        `json:"organizationId"`
+	GroupID             *string                       `json:"groupId"`
+	Name                string                        `json:"name"`
+	Description         *string                       `json:"description"`
+	Schedule            string                        `json:"cronExpression"`
+	Timezone            string                        `json:"timezone"`
+	URL                 string                        `json:"url"`
+	Method              string                        `json:"method"`
+	Headers             JSONString[map[string]string] `json:"headers"`
+	Payload             *string                       `json:"payload"`
+	TimeoutMs           int                           `json:"timeoutMs"`
+	UseStaticIP         FlexBool                      `json:"useStaticIp"`
+	IsActive            FlexBool                      `json:"isActive"`
+	NextRunAt           *string                       `json:"nextRunAt"`
+	LastRunAt           *string                       `json:"lastRunAt"`
+	ConsecutiveFailures int                           `json:"consecutiveFailures"`
+	NotifyOnFailure     FlexBool                      `json:"notifyOnFailure"`
+	NotifyOnSuccess     FlexBool                      `json:"notifyOnSuccess"`
+	NotifyEmails        *string                       `json:"notifyEmails"`
+	CreatedAt           string                        `json:"createdAt"`
+	UpdatedAt           string                        `json:"updatedAt"`
 }
 
 // CreateCronParams are the parameters for creating a cron job.
 type CreateCronParams struct {
-	Name        string            `json:"name"`
-	Description *string           `json:"description,omitempty"`
-	Schedule    string            `json:"cronExpression"`
-	URL         string            `json:"url"`
-	Method      *string           `json:"method,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        *string           `json:"body,omitempty"`
-	Timezone    *string           `json:"timezone,omitempty"`
-	IsActive    *bool             `json:"isActive,omitempty"`
-	UseStaticIP *bool             `json:"useStaticIp,omitempty"`
+	Name            string            `json:"name"`
+	Description     *string           `json:"description,omitempty"`
+	Schedule        string            `json:"cronExpression"`
+	URL             string            `json:"url"`
+	Method          *string           `json:"method,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Payload         *string           `json:"payload,omitempty"`
+	TimeoutMs       *int              `json:"timeoutMs,omitempty"`
+	Timezone        *string           `json:"timezone,omitempty"`
+	IsActive        *bool             `json:"isActive,omitempty"`
+	UseStaticIP     *bool             `json:"useStaticIp,omitempty"`
+	NotifyOnFailure *bool             `json:"notifyOnFailure,omitempty"`
+	NotifyOnSuccess *bool             `json:"notifyOnSuccess,omitempty"`
+	NotifyEmails    *string           `json:"notifyEmails,omitempty"`
+	GroupID         *string           `json:"groupId,omitempty"`
 }
 
 // UpdateCronParams are the parameters for updating a cron job.
 type UpdateCronParams struct {
-	Name        *string           `json:"name,omitempty"`
-	Description *string           `json:"description,omitempty"`
-	Schedule    *string           `json:"cronExpression,omitempty"`
-	URL         *string           `json:"url,omitempty"`
-	Method      *string           `json:"method,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        *string           `json:"body,omitempty"`
-	Timezone    *string           `json:"timezone,omitempty"`
-	IsActive    *bool             `json:"isActive,omitempty"`
-	UseStaticIP *bool             `json:"useStaticIp,omitempty"`
+	Name            *string           `json:"name,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	Schedule        *string           `json:"cronExpression,omitempty"`
+	URL             *string           `json:"url,omitempty"`
+	Method          *string           `json:"method,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Payload         *string           `json:"payload,omitempty"`
+	TimeoutMs       *int              `json:"timeoutMs,omitempty"`
+	Timezone        *string           `json:"timezone,omitempty"`
+	IsActive        *bool             `json:"isActive,omitempty"`
+	UseStaticIP     *bool             `json:"useStaticIp,omitempty"`
+	NotifyOnFailure *bool             `json:"notifyOnFailure,omitempty"`
+	NotifyOnSuccess *bool             `json:"notifyOnSuccess,omitempty"`
+	NotifyEmails    *string           `json:"notifyEmails,omitempty"`
+	GroupID         *string           `json:"groupId,omitempty"`
 }
 
 // CronGroup represents a group of cron jobs.
@@ -125,9 +140,31 @@ func (r *CronResource) Delete(ctx context.Context, id string, opts ...RequestOpt
 	return r.t.do(ctx, "DELETE", "/api/cron/"+url.PathEscape(id), nil, nil, nil, opts...)
 }
 
-// Trigger manually triggers a cron job.
-func (r *CronResource) Trigger(ctx context.Context, id string, opts ...RequestOption) error {
-	return r.t.do(ctx, "POST", "/api/cron/"+url.PathEscape(id)+"/trigger", nil, nil, nil, opts...)
+// CronExecutionStatus represents the outcome of a manually-triggered cron execution.
+type CronExecutionStatus string
+
+const (
+	CronExecutionSuccess CronExecutionStatus = "success"
+	CronExecutionFailed  CronExecutionStatus = "failed"
+)
+
+// CronExecution represents the result of manually triggering a cron job.
+type CronExecution struct {
+	ID             string              `json:"id"`
+	Status         CronExecutionStatus `json:"status"`
+	ResponseStatus *int                `json:"responseStatus"`
+	LatencyMs      int                 `json:"latencyMs"`
+}
+
+// Trigger manually triggers a cron job and returns the resulting execution.
+func (r *CronResource) Trigger(ctx context.Context, id string, opts ...RequestOption) (*CronExecution, error) {
+	var resp struct {
+		Execution CronExecution `json:"execution"`
+	}
+	if err := r.t.do(ctx, "POST", "/api/cron/"+url.PathEscape(id)+"/trigger", nil, nil, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp.Execution, nil
 }
 
 // ListGroups returns all cron groups.
