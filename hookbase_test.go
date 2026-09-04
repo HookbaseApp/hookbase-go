@@ -279,6 +279,56 @@ func TestDestinationsWarehouse(t *testing.T) {
 	}
 }
 
+func TestDestinationsTest(t *testing.T) {
+	// The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts), not
+	// `statusCode`/`duration` — the struct tags map onto those field names explicitly.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "status": 200, "latencyMs": 150, "responseBody": "OK",
+		})
+	}))
+	defer server.Close()
+
+	client := New("test_key", WithBaseURL(server.URL))
+	result, err := client.Destinations.Test(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected success to be true")
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("expected status code 200, got %d", result.StatusCode)
+	}
+	if result.Duration != 150 {
+		t.Errorf("expected duration 150, got %d", result.Duration)
+	}
+	if result.ResponseBody != "OK" {
+		t.Errorf("expected response body OK, got %s", result.ResponseBody)
+	}
+}
+
+func TestDestinationsTestFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false, "error": "Network error",
+		})
+	}))
+	defer server.Close()
+
+	client := New("test_key", WithBaseURL(server.URL))
+	result, err := client.Destinations.Test(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success to be false")
+	}
+	if result.Error != "Network error" {
+		t.Errorf("expected error message, got %q", result.Error)
+	}
+}
+
 func TestApplicationsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{

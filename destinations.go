@@ -200,11 +200,16 @@ func (p *ListDestinationsParams) toQuery() url.Values {
 }
 
 // DestinationTestResult is the result of testing a destination.
+//
+// The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts), not
+// `statusCode`/`duration` — the struct tags map onto those field names explicitly
+// rather than the field names themselves, which stay as the SDK's public contract.
 type DestinationTestResult struct {
 	Success      bool   `json:"success"`
-	StatusCode   int    `json:"statusCode"`
-	Duration     int    `json:"duration"`
+	StatusCode   int    `json:"status"`
+	Duration     int    `json:"latencyMs"`
 	ResponseBody string `json:"responseBody"`
+	Error        string `json:"error,omitempty"`
 }
 
 // DestinationsResource provides access to destination-related API endpoints.
