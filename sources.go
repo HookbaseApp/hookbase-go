@@ -73,71 +73,102 @@ const (
 	IPFilterBoth      IPFilterMode = "both"
 )
 
-// Source represents an inbound webhook source.
+// Source represents an inbound webhook source as the API returns it.
+//
+// Most responses do not carry the signing secret: they set HasSigningSecret and
+// SigningSecretLast4 instead. SigningSecret is populated only by Create, which returns the
+// generated secret once, and it is nil on every source that came from List or Get.
 type Source struct {
-	ID              string         `json:"id"`
-	OrganizationID  string         `json:"organizationId"`
-	Name            string         `json:"name"`
-	Slug            string         `json:"slug"`
-	Description     *string        `json:"description"`
-	Provider        SourceProvider `json:"provider"`
-	IsActive        FlexBool       `json:"isActive"`
-	SigningSecret   *string        `json:"signingSecret"`
-	IngestURL       *string        `json:"ingestUrl"`
-	VerifySignature FlexBool       `json:"verifySignature"`
-	DedupStrategy   DedupStrategy  `json:"dedupStrategy"`
-	DedupWindow     *int           `json:"dedupWindow"`
-	DedupHeaderName *string        `json:"dedupHeaderName"`
-	IPFilterMode    IPFilterMode   `json:"ipFilterMode"`
-	IPAllowlist     []string       `json:"ipAllowlist"`
-	IPDenylist      []string       `json:"ipDenylist"`
-	RateLimit       *int           `json:"rateLimit"`
-	RateLimitWindow *int           `json:"rateLimitWindow"`
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organizationId"`
+	Name           string         `json:"name"`
+	Slug           string         `json:"slug"`
+	Provider       SourceProvider `json:"provider"`
+	Description    *string        `json:"description"`
+	// HasSigningSecret reports whether a signing secret is set. The secret itself is not returned.
+	HasSigningSecret FlexBool `json:"hasSigningSecret"`
+	// SigningSecret is the full secret, returned only by Create. nil on List and Get responses;
+	// use RevealSecret to read it again afterwards.
+	SigningSecret *string `json:"signingSecret,omitempty"`
+	// SigningSecretLast4 is the last four characters of the signing secret, prefixed with "...".
+	SigningSecretLast4 *string `json:"signingSecretLast4"`
+	// RejectInvalidSignatures rejects events whose signature fails verification. It defaults to
+	// false, in which case a failing event is flagged with signatureValid: false and delivered.
+	RejectInvalidSignatures FlexBool     `json:"rejectInvalidSignatures"`
+	RateLimitPerMinute      *int         `json:"rateLimitPerMinute"`
+	IsActive                FlexBool     `json:"isActive"`
+	CustomDomainID          *string      `json:"customDomainId"`
+	IPFilterMode            IPFilterMode `json:"ipFilterMode"`
+	IPAllowlist             []string     `json:"ipAllowlist"`
+	IPDenylist              []string     `json:"ipDenylist"`
+	// EncryptFields are JSONPath expressions whose values are encrypted at rest.
+	EncryptFields []string `json:"encryptFields"`
+	// MaskFields are JSONPath expressions whose values are masked in stored payloads.
+	MaskFields        []string      `json:"maskFields"`
+	DedupEnabled      FlexBool      `json:"dedupEnabled"`
+	DedupStrategy     DedupStrategy `json:"dedupStrategy"`
+	DedupWindowHours  int           `json:"dedupWindowHours"`
+	DedupCustomHeader *string       `json:"dedupCustomHeader"`
 	// TransientMode - payloads never stored at rest (HIPAA/GDPR compliance)
 	TransientMode FlexBool `json:"transientMode"`
 	// AllowedMethods - HTTP verbs the ingest endpoint accepts. Empty means any method.
 	AllowedMethods []string `json:"allowedMethods"`
 	EventCount     int      `json:"eventCount"`
-	LastEventAt    *string  `json:"lastEventAt"`
-	CreatedAt      string   `json:"createdAt"`
-	UpdatedAt      string   `json:"updatedAt"`
+	RouteCount     int      `json:"routeCount"`
+	// IngestURL is returned by Get and Create. It is not included in List responses.
+	IngestURL *string `json:"ingestUrl"`
+	CreatedAt string  `json:"createdAt"`
+	UpdatedAt string  `json:"updatedAt"`
 }
 
 // CreateSourceParams are the parameters for creating a source.
 type CreateSourceParams struct {
-	Name            string          `json:"name"`
-	Slug            *string         `json:"slug,omitempty"`
-	Description     *string         `json:"description,omitempty"`
-	Provider        *SourceProvider `json:"provider,omitempty"`
-	VerifySignature *bool           `json:"verifySignature,omitempty"`
-	DedupStrategy   *DedupStrategy  `json:"dedupStrategy,omitempty"`
-	DedupWindow     *int            `json:"dedupWindow,omitempty"`
-	DedupHeaderName *string         `json:"dedupHeaderName,omitempty"`
-	IPFilterMode    *IPFilterMode   `json:"ipFilterMode,omitempty"`
-	IPAllowlist     []string        `json:"ipAllowlist,omitempty"`
-	IPDenylist      []string        `json:"ipDenylist,omitempty"`
-	RateLimit       *int            `json:"rateLimit,omitempty"`
-	RateLimitWindow *int            `json:"rateLimitWindow,omitempty"`
-	TransientMode   *bool           `json:"transientMode,omitempty"`
+	Name string `json:"name"`
+	// Slug is required: it forms the ingest URL, /ingest/<org>/<slug>, and cannot be changed later.
+	Slug        string          `json:"slug"`
+	Provider    *SourceProvider `json:"provider,omitempty"`
+	Description *string         `json:"description,omitempty"`
+	// SigningSecret supplies your own secret, to match what the provider is already configured
+	// with. Omit it and the API generates one, returned once on the created source.
+	SigningSecret *string `json:"signingSecret,omitempty"`
+	// RejectInvalidSignatures rejects events whose signature fails verification. Defaults to false.
+	RejectInvalidSignatures *bool          `json:"rejectInvalidSignatures,omitempty"`
+	RateLimitPerMinute      *int           `json:"rateLimitPerMinute,omitempty"`
+	IPFilterMode            *IPFilterMode  `json:"ipFilterMode,omitempty"`
+	IPAllowlist             []string       `json:"ipAllowlist,omitempty"`
+	IPDenylist              []string       `json:"ipDenylist,omitempty"`
+	EncryptFields           []string       `json:"encryptFields,omitempty"`
+	MaskFields              []string       `json:"maskFields,omitempty"`
+	DedupEnabled            *bool          `json:"dedupEnabled,omitempty"`
+	DedupStrategy           *DedupStrategy `json:"dedupStrategy,omitempty"`
+	// DedupWindowHours is the deduplication window in hours, 1 to 168.
+	DedupWindowHours *int `json:"dedupWindowHours,omitempty"`
+	// DedupCustomHeader is the header to deduplicate on when DedupStrategy is idempotency_key.
+	DedupCustomHeader *string `json:"dedupCustomHeader,omitempty"`
+	TransientMode     *bool   `json:"transientMode,omitempty"`
 	// AllowedMethods restricts the ingest endpoint to these HTTP verbs. Omit for any method.
 	AllowedMethods []string `json:"allowedMethods,omitempty"`
 }
 
 // UpdateSourceParams are the parameters for updating a source.
 type UpdateSourceParams struct {
-	Name            *string        `json:"name,omitempty"`
-	Description     *string        `json:"description,omitempty"`
-	IsActive        *bool          `json:"isActive,omitempty"`
-	VerifySignature *bool          `json:"verifySignature,omitempty"`
-	DedupStrategy   *DedupStrategy `json:"dedupStrategy,omitempty"`
-	DedupWindow     *int           `json:"dedupWindow,omitempty"`
-	DedupHeaderName *string        `json:"dedupHeaderName,omitempty"`
-	IPFilterMode    *IPFilterMode  `json:"ipFilterMode,omitempty"`
-	IPAllowlist     []string       `json:"ipAllowlist,omitempty"`
-	IPDenylist      []string       `json:"ipDenylist,omitempty"`
-	RateLimit       *int           `json:"rateLimit,omitempty"`
-	RateLimitWindow *int           `json:"rateLimitWindow,omitempty"`
-	TransientMode   *bool          `json:"transientMode,omitempty"`
+	Name                    *string         `json:"name,omitempty"`
+	Description             *string         `json:"description,omitempty"`
+	Provider                *SourceProvider `json:"provider,omitempty"`
+	IsActive                *bool           `json:"isActive,omitempty"`
+	SigningSecret           *string         `json:"signingSecret,omitempty"`
+	RejectInvalidSignatures *bool           `json:"rejectInvalidSignatures,omitempty"`
+	RateLimitPerMinute      *int            `json:"rateLimitPerMinute,omitempty"`
+	IPFilterMode            *IPFilterMode   `json:"ipFilterMode,omitempty"`
+	IPAllowlist             []string        `json:"ipAllowlist,omitempty"`
+	IPDenylist              []string        `json:"ipDenylist,omitempty"`
+	EncryptFields           []string        `json:"encryptFields,omitempty"`
+	MaskFields              []string        `json:"maskFields,omitempty"`
+	DedupEnabled            *bool           `json:"dedupEnabled,omitempty"`
+	DedupStrategy           *DedupStrategy  `json:"dedupStrategy,omitempty"`
+	DedupWindowHours        *int            `json:"dedupWindowHours,omitempty"`
+	DedupCustomHeader       *string         `json:"dedupCustomHeader,omitempty"`
+	TransientMode           *bool           `json:"transientMode,omitempty"`
 	// AllowedMethods restricts the ingest endpoint to these HTTP verbs. Omit for any method.
 	AllowedMethods []string `json:"allowedMethods,omitempty"`
 }
