@@ -6,31 +6,54 @@ import (
 )
 
 // SourceProvider represents the type of webhook provider.
+//
+// Mirrors SUPPORTED_SIGNATURE_PROVIDERS in the API (api/src/utils/signature-schemes.ts),
+// which is derived from the signature scheme table rather than restated. Regenerate with
+// `npx tsx scripts/print-source-enums.ts` in the api package; do not hand-add constants here,
+// because a value the API does not accept is a 400 the type promised would not happen.
+//
+// Removed in the 2026-09 correction: SourceProviderSendGrid, SourceProviderMailgun and
+// SourceProviderLinear. All three were exported from the beginning and none was ever accepted
+// by the API. SendGrid signs with ECDSA and Mailgun puts the signature in the POST body, so
+// neither fits this scheme model; Linear's scheme is real but unverified against its docs.
+// Use SourceProviderCustom for all three.
+//
+// SourceProviderSvix is an alias of SourceProviderStandardWebhooks; both resolve to the same
+// scheme server-side. It is kept because it is the name most senders use for it.
 type SourceProvider string
 
 const (
-	SourceProviderGeneric  SourceProvider = "generic"
-	SourceProviderGitHub   SourceProvider = "github"
-	SourceProviderStripe   SourceProvider = "stripe"
-	SourceProviderShopify  SourceProvider = "shopify"
-	SourceProviderSlack    SourceProvider = "slack"
-	SourceProviderTwilio   SourceProvider = "twilio"
-	SourceProviderSendGrid SourceProvider = "sendgrid"
-	SourceProviderMailgun  SourceProvider = "mailgun"
-	SourceProviderPaddle   SourceProvider = "paddle"
-	SourceProviderLinear   SourceProvider = "linear"
-	SourceProviderSvix     SourceProvider = "svix"
-	SourceProviderCustom   SourceProvider = "custom"
+	SourceProviderBitbucket        SourceProvider = "bitbucket"
+	SourceProviderCustom           SourceProvider = "custom"
+	SourceProviderGeneric          SourceProvider = "generic"
+	SourceProviderGitHub           SourceProvider = "github"
+	SourceProviderGitLab           SourceProvider = "gitlab"
+	SourceProviderHeroku           SourceProvider = "heroku"
+	SourceProviderLemonSqueezy     SourceProvider = "lemonsqueezy"
+	SourceProviderPaddle           SourceProvider = "paddle"
+	SourceProviderSentry           SourceProvider = "sentry"
+	SourceProviderShopify          SourceProvider = "shopify"
+	SourceProviderSlack            SourceProvider = "slack"
+	SourceProviderStandardWebhooks SourceProvider = "standard-webhooks"
+	SourceProviderStripe           SourceProvider = "stripe"
+	SourceProviderSvix             SourceProvider = "svix"
+	SourceProviderTwilio           SourceProvider = "twilio"
+	SourceProviderTypeform         SourceProvider = "typeform"
+	SourceProviderZoom             SourceProvider = "zoom"
 )
 
 // DedupStrategy represents the deduplication strategy.
 type DedupStrategy string
 
+// Corrected alongside SourceProvider: DedupHeader and DedupEventID were never accepted by the
+// API, and the three values it actually defaults to and documents were missing. DedupAuto is
+// the server-side default.
 const (
-	DedupNone        DedupStrategy = "none"
-	DedupHeader      DedupStrategy = "header"
-	DedupPayloadHash DedupStrategy = "payload_hash"
-	DedupEventID     DedupStrategy = "event_id"
+	DedupAuto           DedupStrategy = "auto"
+	DedupProviderID     DedupStrategy = "provider_id"
+	DedupPayloadHash    DedupStrategy = "payload_hash"
+	DedupIdempotencyKey DedupStrategy = "idempotency_key"
+	DedupNone           DedupStrategy = "none"
 )
 
 // IPFilterMode represents the IP filter mode.
@@ -40,6 +63,7 @@ const (
 	IPFilterNone      IPFilterMode = "none"
 	IPFilterAllowlist IPFilterMode = "allowlist"
 	IPFilterDenylist  IPFilterMode = "denylist"
+	IPFilterBoth      IPFilterMode = "both"
 )
 
 // Source represents an inbound webhook source.
