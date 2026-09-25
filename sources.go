@@ -119,6 +119,26 @@ type Source struct {
 	IngestURL *string `json:"ingestUrl"`
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
+
+	// The fields below name response keys the API has never sent. They decoded to the zero value
+	// on every version of this SDK that declared them, so reading one has always told you nothing
+	// about the source. They are kept, tagged json:"-", so existing code still compiles; each one
+	// names the field that carries the value it was supposed to. They will go in v2.
+
+	// Deprecated: always false. Use RejectInvalidSignatures.
+	VerifySignature FlexBool `json:"-"`
+	// Deprecated: always nil. Use DedupWindowHours.
+	DedupWindow *int `json:"-"`
+	// Deprecated: always nil. Use DedupCustomHeader.
+	DedupHeaderName *string `json:"-"`
+	// Deprecated: always nil. Use RateLimitPerMinute.
+	RateLimit *int `json:"-"`
+	// Deprecated: always nil. The API has no per-source rate limit window; RateLimitPerMinute is
+	// per minute by definition.
+	RateLimitWindow *int `json:"-"`
+	// Deprecated: always nil. The API does not return a last-event timestamp on a source; query
+	// the events endpoint filtered by source instead.
+	LastEventAt *string `json:"-"`
 }
 
 // CreateSourceParams are the parameters for creating a source.
