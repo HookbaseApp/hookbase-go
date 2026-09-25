@@ -23,14 +23,20 @@ import (
 type SourceProvider string
 
 const (
+	SourceProviderAirtable         SourceProvider = "airtable"
+	SourceProviderAsana            SourceProvider = "asana"
 	SourceProviderBitbucket        SourceProvider = "bitbucket"
+	SourceProviderCalendly         SourceProvider = "calendly"
 	SourceProviderCustom           SourceProvider = "custom"
 	SourceProviderGeneric          SourceProvider = "generic"
 	SourceProviderGitHub           SourceProvider = "github"
 	SourceProviderGitLab           SourceProvider = "gitlab"
 	SourceProviderHeroku           SourceProvider = "heroku"
+	SourceProviderIntercom         SourceProvider = "intercom"
 	SourceProviderLemonSqueezy     SourceProvider = "lemonsqueezy"
+	SourceProviderNotion           SourceProvider = "notion"
 	SourceProviderPaddle           SourceProvider = "paddle"
+	SourceProviderRazorpay         SourceProvider = "razorpay"
 	SourceProviderSentry           SourceProvider = "sentry"
 	SourceProviderShopify          SourceProvider = "shopify"
 	SourceProviderSlack            SourceProvider = "slack"
@@ -39,6 +45,7 @@ const (
 	SourceProviderSvix             SourceProvider = "svix"
 	SourceProviderTwilio           SourceProvider = "twilio"
 	SourceProviderTypeform         SourceProvider = "typeform"
+	SourceProviderWorkOS           SourceProvider = "workos"
 	SourceProviderZoom             SourceProvider = "zoom"
 )
 
