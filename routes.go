@@ -16,33 +16,33 @@ const (
 
 // Route represents a webhook routing rule.
 type Route struct {
-	ID                         string            `json:"id"`
-	OrganizationID             string            `json:"organizationId"`
-	Name                       string            `json:"name"`
-	SourceID                   string            `json:"sourceId"`
-	DestinationID              string            `json:"destinationId"`
-	FilterID                   *string           `json:"filterId"`
-	FilterConditions           JSONString[[]FilterCondition] `json:"filterConditions"`
-	FilterLogic                *string           `json:"filterLogic"`
-	TransformID                *string           `json:"transformId"`
-	SchemaID                   *string           `json:"schemaId"`
-	Priority                   int               `json:"priority"`
-	IsActive                   FlexBool          `json:"isActive"`
-	CircuitState               *CircuitState     `json:"circuitState"`
-	CircuitOpenedAt            *string           `json:"circuitOpenedAt"`
-	CircuitCooldownSeconds     *int              `json:"circuitCooldownSeconds"`
-	CircuitFailureThreshold    *int              `json:"circuitFailureThreshold"`
-	CircuitProbeSuccessThreshold *int            `json:"circuitProbeSuccessThreshold"`
-	NotifyOnFailure            FlexBool          `json:"notifyOnFailure"`
-	NotifyOnSuccess            FlexBool          `json:"notifyOnSuccess"`
-	NotifyOnRecovery           FlexBool          `json:"notifyOnRecovery"`
-	NotifyEmails               *string           `json:"notifyEmails"`
-	FailureThreshold           *int              `json:"failureThreshold"`
-	FailoverDestinationIDs     []string          `json:"failoverDestinationIds"`
-	FailoverAfterAttempts      *int              `json:"failoverAfterAttempts"`
-	ExpectedResponse           *string           `json:"expectedResponse"`
-	CreatedAt                  string            `json:"createdAt"`
-	UpdatedAt                  string            `json:"updatedAt"`
+	ID                           string                        `json:"id"`
+	OrganizationID               string                        `json:"organizationId"`
+	Name                         string                        `json:"name"`
+	SourceID                     string                        `json:"sourceId"`
+	DestinationID                string                        `json:"destinationId"`
+	FilterID                     *string                       `json:"filterId"`
+	FilterConditions             JSONString[[]FilterCondition] `json:"filterConditions"`
+	FilterLogic                  *string                       `json:"filterLogic"`
+	TransformID                  *string                       `json:"transformId"`
+	SchemaID                     *string                       `json:"schemaId"`
+	Priority                     int                           `json:"priority"`
+	IsActive                     FlexBool                      `json:"isActive"`
+	CircuitState                 *CircuitState                 `json:"circuitState"`
+	CircuitOpenedAt              *string                       `json:"circuitOpenedAt"`
+	CircuitCooldownSeconds       *int                          `json:"circuitCooldownSeconds"`
+	CircuitFailureThreshold      *int                          `json:"circuitFailureThreshold"`
+	CircuitProbeSuccessThreshold *int                          `json:"circuitProbeSuccessThreshold"`
+	NotifyOnFailure              FlexBool                      `json:"notifyOnFailure"`
+	NotifyOnSuccess              FlexBool                      `json:"notifyOnSuccess"`
+	NotifyOnRecovery             FlexBool                      `json:"notifyOnRecovery"`
+	NotifyEmails                 *string                       `json:"notifyEmails"`
+	FailureThreshold             *int                          `json:"failureThreshold"`
+	FailoverDestinationIDs       []string                      `json:"failoverDestinationIds"`
+	FailoverAfterAttempts        *int                          `json:"failoverAfterAttempts"`
+	ExpectedResponse             *string                       `json:"expectedResponse"`
+	CreatedAt                    string                        `json:"createdAt"`
+	UpdatedAt                    string                        `json:"updatedAt"`
 }
 
 // CreateRouteParams are the parameters for creating a route.

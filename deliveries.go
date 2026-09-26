@@ -38,9 +38,9 @@ type Delivery struct {
 type DeliveryDetail struct {
 	Delivery
 	Event *struct {
-		ID        string  `json:"id"`
-		EventType *string `json:"eventType"`
-		ReceivedAt string `json:"receivedAt"`
+		ID         string  `json:"id"`
+		EventType  *string `json:"eventType"`
+		ReceivedAt string  `json:"receivedAt"`
 	} `json:"event,omitempty"`
 	Destination *struct {
 		Name string `json:"name"`

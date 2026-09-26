@@ -150,9 +150,9 @@ func TestDestinationsList(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"destinations": []map[string]interface{}{
 				{"id": "dst_1", "name": "My Webhook", "slug": "my-webhook", "type": "http", "url": "https://example.com/webhook",
-					"method": "POST", "authType": "none", "isActive": true, "timeout": 30,
-					"retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
-					"config": nil, "fieldMapping": nil,
+					"method": "POST", "authType": "none", "isActive": true, "timeoutMs": 30000,
+					"deliveryCount": 0,
+					"config":        nil, "fieldMapping": nil,
 					"createdAt": "2024-01-01", "updatedAt": "2024-01-01"},
 			},
 			"pagination": map[string]interface{}{"total": 1, "page": 1, "pageSize": 20},
@@ -184,7 +184,7 @@ func TestDestinationsWarehouse(t *testing.T) {
 				"destination": map[string]interface{}{
 					"id": "dst_s3", "name": "S3 Archive", "slug": "s3-archive", "type": "s3",
 					"url": "", "method": "POST", "authType": "none", "isActive": true,
-					"timeout": 30, "retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
+					"timeoutMs": 30000, "deliveryCount": 0,
 					"config": map[string]interface{}{
 						"bucket": "my-webhooks", "region": "us-east-1",
 						"accessKeyId": "AKIA...", "secretAccessKey": "***",
@@ -214,7 +214,7 @@ func TestDestinationsWarehouse(t *testing.T) {
 				"destination": map[string]interface{}{
 					"id": "dst_s3", "name": "S3 Archive", "slug": "s3-archive", "type": "s3",
 					"url": "", "method": "POST", "authType": "none", "isActive": true,
-					"timeout": 30, "retryCount": 3, "retryInterval": 60, "deliveryCount": 0,
+					"timeoutMs": 30000, "deliveryCount": 0,
 					"config": body["config"], "fieldMapping": body["fieldMapping"],
 					"createdAt": "2024-01-01", "updatedAt": "2024-01-01",
 				},
@@ -262,9 +262,9 @@ func TestDestinationsWarehouse(t *testing.T) {
 		Name: "S3 Archive",
 		Type: &s3Type,
 		Config: S3Config{
-			Bucket:         "my-webhooks",
-			Region:         "us-east-1",
-			AccessKeyID:    "AKIA...",
+			Bucket:          "my-webhooks",
+			Region:          "us-east-1",
+			AccessKeyID:     "AKIA...",
 			SecretAccessKey: "***",
 		},
 		FieldMapping: []FieldMapping{

@@ -92,10 +92,10 @@ type TransformTestParams struct {
 
 // TransformTestResult is the result of testing a transform.
 type TransformTestResult struct {
-	Success        bool        `json:"success"`
-	Output         interface{} `json:"output,omitempty"`
-	Error          *string     `json:"error,omitempty"`
-	ExecutionTimeMs *int       `json:"executionTimeMs,omitempty"`
+	Success         bool        `json:"success"`
+	Output          interface{} `json:"output,omitempty"`
+	Error           *string     `json:"error,omitempty"`
+	ExecutionTimeMs *int        `json:"executionTimeMs,omitempty"`
 }
 
 // TransformsResource provides access to transform-related API endpoints.

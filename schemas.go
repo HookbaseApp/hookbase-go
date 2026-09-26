@@ -7,10 +7,10 @@ import (
 
 // Schema represents a webhook payload validation schema.
 type Schema struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organizationId"`
-	Name           string `json:"name"`
-	Slug           string `json:"slug"`
+	ID             string  `json:"id"`
+	OrganizationID string  `json:"organizationId"`
+	Name           string  `json:"name"`
+	Slug           string  `json:"slug"`
 	Description    *string `json:"description"`
 	JSONSchema     string  `json:"jsonSchema"`
 	Version        int     `json:"version"`

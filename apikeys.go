@@ -27,9 +27,9 @@ type APIKeyWithSecret struct {
 
 // CreateAPIKeyParams are the parameters for creating an API key.
 type CreateAPIKeyParams struct {
-	Name         string   `json:"name"`
-	Scopes       []string `json:"scopes,omitempty"`
-	ExpiresInDays *int    `json:"expiresInDays,omitempty"`
+	Name          string   `json:"name"`
+	Scopes        []string `json:"scopes,omitempty"`
+	ExpiresInDays *int     `json:"expiresInDays,omitempty"`
 }
 
 // UpdateAPIKeyParams are the parameters for updating an API key.

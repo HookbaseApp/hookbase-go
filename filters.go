@@ -14,15 +14,15 @@ type FilterCondition struct {
 
 // Filter represents a webhook routing filter.
 type Filter struct {
-	ID             string            `json:"id"`
-	OrganizationID string            `json:"organizationId"`
-	Name           string            `json:"name"`
-	Slug           string            `json:"slug"`
-	Description    *string           `json:"description"`
+	ID             string                        `json:"id"`
+	OrganizationID string                        `json:"organizationId"`
+	Name           string                        `json:"name"`
+	Slug           string                        `json:"slug"`
+	Description    *string                       `json:"description"`
 	Conditions     JSONString[[]FilterCondition] `json:"conditions"`
-	Logic          string            `json:"logic"`
-	CreatedAt      string            `json:"createdAt"`
-	UpdatedAt      string            `json:"updatedAt"`
+	Logic          string                        `json:"logic"`
+	CreatedAt      string                        `json:"createdAt"`
+	UpdatedAt      string                        `json:"updatedAt"`
 }
 
 // CreateFilterParams are the parameters for creating a filter.

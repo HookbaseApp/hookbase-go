@@ -54,16 +54,16 @@ type EventDeliveryInfo struct {
 
 // EventDetail contains full event detail including payload and deliveries.
 type EventDetail struct {
-	ID             string              `json:"id"`
-	SourceID       string              `json:"sourceId"`
-	EventType      *string             `json:"eventType"`
-	Payload        interface{}         `json:"payload"`
+	ID             string                        `json:"id"`
+	SourceID       string                        `json:"sourceId"`
+	EventType      *string                       `json:"eventType"`
+	Payload        interface{}                   `json:"payload"`
 	Headers        JSONString[map[string]string] `json:"headers"`
-	SignatureValid *int                `json:"signatureValid"`
-	ReceivedAt     string              `json:"receivedAt"`
-	IPAddress      *string             `json:"ipAddress"`
-	SourceName     string              `json:"sourceName"`
-	Deliveries     []EventDeliveryInfo `json:"deliveries"`
+	SignatureValid *int                          `json:"signatureValid"`
+	ReceivedAt     string                        `json:"receivedAt"`
+	IPAddress      *string                       `json:"ipAddress"`
+	SourceName     string                        `json:"sourceName"`
+	Deliveries     []EventDeliveryInfo           `json:"deliveries"`
 }
 
 // EventDebugInfo contains debug info for an event including a curl command.
@@ -206,7 +206,7 @@ func (r *EventsResource) List(ctx context.Context, params *ListEventsParams, opt
 // Get returns event detail including payload and deliveries.
 func (r *EventsResource) Get(ctx context.Context, eventID string, opts ...RequestOption) (*EventDetail, error) {
 	var resp struct {
-		Event      EventDetail       `json:"event"`
+		Event      EventDetail         `json:"event"`
 		Deliveries []EventDeliveryInfo `json:"deliveries"`
 	}
 	if err := r.t.do(ctx, "GET", "/api/events/"+url.PathEscape(eventID), nil, nil, &resp, opts...); err != nil {

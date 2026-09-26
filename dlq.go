@@ -28,8 +28,8 @@ type DLQMessage struct {
 
 // DLQStats contains DLQ statistics.
 type DLQStats struct {
-	Total             int                `json:"total"`
-	ByReason          map[string]int     `json:"byReason"`
+	Total               int            `json:"total"`
+	ByReason            map[string]int `json:"byReason"`
 	TopFailingEndpoints []struct {
 		EndpointID  string `json:"endpointId"`
 		EndpointURL string `json:"endpointUrl"`
