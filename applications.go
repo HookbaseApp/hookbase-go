@@ -2,6 +2,7 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
@@ -10,10 +11,55 @@ type Application struct {
 	ID             string                 `json:"id"`
 	Name           string                 `json:"name"`
 	OrganizationID string                 `json:"organizationId"`
-	UID            string                 `json:"uid"`
+	ExternalID     string                 `json:"externalId"`
 	Metadata       map[string]interface{} `json:"metadata"`
-	CreatedAt      string                 `json:"createdAt"`
-	UpdatedAt      string                 `json:"updatedAt"`
+
+	// Rate limits. Null on the wire when unset, which decodes to nil here rather than to 0 —
+	// "no limit" and "a limit of zero" are different answers.
+	RateLimitPerSecond *int `json:"rateLimitPerSecond"`
+	RateLimitPerMinute *int `json:"rateLimitPerMinute"`
+	RateLimitPerHour   *int `json:"rateLimitPerHour"`
+
+	IsDisabled     FlexBool `json:"isDisabled"`
+	DisabledAt     *string  `json:"disabledAt"`
+	DisabledReason *string  `json:"disabledReason"`
+
+	TotalEndpoints      int     `json:"totalEndpoints"`
+	TotalMessagesSent   int     `json:"totalMessagesSent"`
+	TotalMessagesFailed int     `json:"totalMessagesFailed"`
+	LastEventAt         *string `json:"lastEventAt"`
+
+	CreatedBy *string `json:"createdBy"`
+	APIKeyID  *string `json:"apiKeyId"`
+	CreatedAt string  `json:"createdAt"`
+	UpdatedAt string  `json:"updatedAt"`
+
+	// SendEventURL is returned by Create and GetOrCreate only; other responses leave it empty.
+	SendEventURL string `json:"sendEventUrl"`
+
+	// UID is deprecated: the API calls this field externalId and has never sent a key named
+	// "uid", so this was decoded from nothing and every caller reading it got "". Read
+	// ExternalID instead. Kept and mirrored to it so existing field access keeps working.
+	//
+	// Deprecated: use ExternalID.
+	UID string `json:"-"`
+}
+
+// UnmarshalJSON decodes an application and mirrors ExternalID onto the deprecated UID field.
+//
+// The alias needs a hook rather than a second tag because encoding/json will not decode one key
+// into two fields. Doing it here rather than at each call site means Get, List, Create, Update and
+// GetOrCreate all agree, which the previous arrangement — a `json:"uid"` tag matching nothing —
+// only appeared to.
+func (a *Application) UnmarshalJSON(data []byte) error {
+	type plain Application
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = Application(decoded)
+	a.UID = a.ExternalID
+	return nil
 }
 
 // CreateApplicationParams are the parameters for creating an application.

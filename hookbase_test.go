@@ -333,7 +333,7 @@ func TestApplicationsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []map[string]interface{}{
-				{"id": "app_1", "name": "Test App", "organizationId": "org_1", "uid": "ext_1",
+				{"id": "app_1", "name": "Test App", "organizationId": "org_1", "externalId": "ext_1",
 					"createdAt": "2024-01-01", "updatedAt": "2024-01-01"},
 			},
 			"pagination": map[string]interface{}{"hasMore": false, "nextCursor": nil},
