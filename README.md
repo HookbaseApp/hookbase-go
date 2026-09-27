@@ -158,6 +158,21 @@ params := &hookbase.UpdateSourceParams{
 }
 ```
 
+A nil pointer means "leave this setting alone", so it cannot also mean "reset this setting". To send
+an explicit null, name the field in `Clear`:
+
+```go
+// Drop the endpoint's custom retry schedule and go back to the platform default.
+params := &hookbase.UpdateEndpointParams{
+    Clear: []hookbase.EndpointField{hookbase.EndpointRetryDelays},
+}
+```
+
+`Clear` accepts the five endpoint settings the API takes a null for: `EndpointDescription`,
+`EndpointSuccessStatusCodes`, `EndpointBackoffType`, `EndpointRetryDelays` and
+`EndpointIPAllowlistNotes`. Naming anything else, or naming a field you also set on the same struct,
+is an error rather than a silent choice between the two.
+
 ## Error Handling
 
 All API errors are typed for easy handling with `errors.As`:

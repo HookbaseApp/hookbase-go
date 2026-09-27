@@ -141,9 +141,24 @@ type Endpoint struct {
 	APIKeyID          *string `json:"apiKeyId"`
 	CreatedAt         string  `json:"createdAt"`
 	UpdatedAt         string  `json:"updatedAt"`
-	// UseStaticIP is accepted on create and update, but the API does not currently include
-	// useStaticIp in endpoint responses, so it stays false on a decoded endpoint. The tag is kept
-	// so it decodes if the API starts sending it.
+
+	// The six below are the endpoint's delivery policy. Every one of them is accepted on create and
+	// update and acted on by the delivery path, and none of them appeared in any response until the
+	// API started returning them -- so these were write-only settings, and this struct had no field
+	// to decode five of them into.
+
+	// RateLimitPerSecond caps deliveries per second. 0 means unlimited.
+	RateLimitPerSecond int `json:"rateLimitPerSecond"`
+	// SuccessStatusCodes are the response statuses counted as a successful delivery. Nil means the
+	// platform default, 200 through 299.
+	SuccessStatusCodes []SuccessStatusCode `json:"successStatusCodes"`
+	// BackoffType is the curve used between retries. Nil means the platform default, exponential.
+	BackoffType *BackoffType `json:"backoffType"`
+	// RetryDelays are explicit retry delays in seconds. Nil means the default schedule.
+	RetryDelays []int `json:"retryDelays"`
+	// IPAllowlistNotes is informational only.
+	IPAllowlistNotes *string `json:"ipAllowlistNotes"`
+	// UseStaticIP reports whether deliveries go through the dedicated static-IP proxy.
 	UseStaticIP FlexBool `json:"useStaticIp"`
 
 	// The fields below name response keys the API has never sent. They decoded to the zero value
@@ -154,8 +169,8 @@ type Endpoint struct {
 	// Deprecated: always nil. Event-type filtering lives on subscriptions, not on the endpoint;
 	// use client.Subscriptions to read which event types an endpoint receives.
 	FilterTypes []string `json:"-"`
-	// Deprecated: always nil. The API accepts rateLimitPerSecond on create and update but does not
-	// return it on an endpoint, so there is no response field to read it back from.
+	// Deprecated: always nil. Read RateLimitPerSecond above, which is the field the API's
+	// rateLimitPerSecond decodes into.
 	RateLimit *int `json:"-"`
 	// Deprecated: always nil. There is no rate-limit window; the endpoint rate limit is per second
 	// by definition.
@@ -256,6 +271,30 @@ func (p CreateEndpointParams) MarshalJSON() ([]byte, error) {
 	return json.Marshal(w)
 }
 
+// EndpointField names one endpoint setting, for UpdateEndpointParams.Clear.
+type EndpointField string
+
+// The settings PATCH /api/webhook-endpoints/:id accepts a null for. Each one resets to the
+// platform default: no description, the 200-299 success range, exponential backoff, the default
+// retry schedule, no allowlist note.
+const (
+	EndpointDescription        EndpointField = "description"
+	EndpointSuccessStatusCodes EndpointField = "successStatusCodes"
+	EndpointBackoffType        EndpointField = "backoffType"
+	EndpointRetryDelays        EndpointField = "retryDelays"
+	EndpointIPAllowlistNotes   EndpointField = "ipAllowlistNotes"
+)
+
+// clearableEndpointFields is the allowlist behind Clear. A field the API does not accept null for
+// would be a 400 from the server; refusing it here says which field and why.
+var clearableEndpointFields = map[EndpointField]bool{
+	EndpointDescription:        true,
+	EndpointSuccessStatusCodes: true,
+	EndpointBackoffType:        true,
+	EndpointRetryDelays:        true,
+	EndpointIPAllowlistNotes:   true,
+}
+
 // UpdateEndpointParams are the parameters for updating an endpoint.
 //
 // Every field is optional: only the ones set are sent, and only the settings sent are changed.
@@ -285,6 +324,17 @@ type UpdateEndpointParams struct {
 	CircuitSuccessThreshold *int    `json:"circuitSuccessThreshold,omitempty"`
 	CircuitCooldownSeconds  *int    `json:"circuitCooldownSeconds,omitempty"`
 
+	// Clear names settings to reset to their defaults. Every other field on this struct is a
+	// pointer or a slice, where nil means "leave this alone" -- so nil cannot also mean "set this
+	// back to nothing", and five settings the API explicitly lets you clear had no way to be
+	// cleared from Go at all. Naming one here sends an explicit JSON null for it:
+	//
+	//	params := UpdateEndpointParams{Clear: []EndpointField{EndpointRetryDelays}}
+	//
+	// Only the five fields the API accepts null for are allowed; anything else, or a field that is
+	// also set on this struct, is a marshalling error rather than a silent choice between them.
+	Clear []EndpointField `json:"-"`
+
 	// As on CreateEndpointParams: tagged json:"-", kept for compilation, and Headers and
 	// RateLimit still take effect through the fields their notices name. They will go in v2.
 
@@ -312,7 +362,29 @@ func (p UpdateEndpointParams) MarshalJSON() ([]byte, error) {
 	if w.RateLimitPerSecond == nil {
 		w.RateLimitPerSecond = p.RateLimit
 	}
-	return json.Marshal(w)
+	encoded, err := json.Marshal(w)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.Clear) == 0 {
+		return encoded, nil
+	}
+	// Re-decode rather than hand-building the body, so the nulls are added to whatever the struct
+	// emitted instead of to a second, drifting copy of its field list.
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, err
+	}
+	for _, field := range p.Clear {
+		if !clearableEndpointFields[field] {
+			return nil, fmt.Errorf("hookbase: UpdateEndpointParams.Clear names %q, which the API does not accept a null for", string(field))
+		}
+		if _, alsoSet := body[string(field)]; alsoSet {
+			return nil, fmt.Errorf("hookbase: UpdateEndpointParams.Clear names %q but that field is also set; clear it or set it, not both", string(field))
+		}
+		body[string(field)] = json.RawMessage("null")
+	}
+	return json.Marshal(body)
 }
 
 // headersFromMap converts the deprecated map form of custom headers into the array of
