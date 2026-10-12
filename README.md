@@ -67,6 +67,7 @@ client := hookbase.New("your_api_key",
 | `client.APIKeys` | API key management |
 | `client.Cron` | Scheduled cron jobs |
 | `client.Tunnels` | Local development tunnels |
+| `client.Providers` | Public provider catalog: signing-secret rules, event types |
 
 ### Outbound (Send Webhooks)
 
@@ -87,7 +88,30 @@ client := hookbase.New("your_api_key",
 ```go
 source, err := client.Sources.Create(ctx, &hookbase.CreateSourceParams{
     Name:     "GitHub Webhooks",
+    Slug:     "github",
     Provider: hookbase.Ptr(hookbase.SourceProviderGitHub),
+})
+```
+
+What goes in `SigningSecret` depends on the provider. The provider catalog says which:
+
+```go
+p, err := client.Providers.Get(ctx, "stripe")
+switch p.SignatureVerification.SecretSource {
+case hookbase.SecretSourceProvider, hookbase.SecretSourcePublicKey:
+    // paste the vendor's value into SigningSecret
+case hookbase.SecretSourceOperator:
+    // omit it; Create returns the generated secret once
+case hookbase.SecretSourceBuiltIn:
+    // send none; Source.VerifiesWithoutSecret is true
+}
+```
+
+To clear a field on update, name it in `Clear` (nil pointers mean "leave alone"):
+
+```go
+err := client.Sources.Update(ctx, "src_123", &hookbase.UpdateSourceParams{
+    Clear: []hookbase.SourceField{hookbase.SourceSigningSecret},
 })
 ```
 

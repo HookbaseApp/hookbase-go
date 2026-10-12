@@ -1,0 +1,2 @@
+# Local build output of the module (go build with no -o); never source.
+/test-go-sdk
