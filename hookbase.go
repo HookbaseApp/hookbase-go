@@ -14,6 +14,7 @@
 //	// Create a source
 //	source, err := client.Sources.Create(ctx, &hookbase.CreateSourceParams{
 //	    Name: "My Source",
+//	    Slug: "my-source",
 //	})
 //
 //	// Send an outbound webhook
@@ -40,6 +41,8 @@ type Client struct {
 	Cron         *CronResource
 	Tunnels      *TunnelsResource
 	Analytics    *AnalyticsResource
+	// Providers is the public provider catalog.
+	Providers *ProvidersResource
 
 	// Outbound resources
 	Applications  *ApplicationsResource
@@ -79,6 +82,7 @@ func New(apiKey string, opts ...ClientOption) *Client {
 	c.Cron = &CronResource{t: t}
 	c.Tunnels = &TunnelsResource{t: t}
 	c.Analytics = &AnalyticsResource{t: t}
+	c.Providers = &ProvidersResource{t: t}
 
 	// Outbound
 	c.Applications = &ApplicationsResource{t: t}

@@ -20,13 +20,13 @@ import (
 // stops being accepted, this test is where that gets noticed instead of a user's terminal.
 var (
 	createSourceFields = []string{
-		"name", "slug", "provider", "description", "signingSecret",
+		"name", "slug", "provider", "description", "signingSecret", "verifyToken",
 		"rejectInvalidSignatures", "rateLimitPerMinute", "ipFilterMode", "ipAllowlist",
 		"ipDenylist", "encryptFields", "maskFields", "dedupEnabled", "dedupStrategy",
 		"dedupWindowHours", "dedupCustomHeader", "transientMode", "allowedMethods",
 	}
 	updateSourceFields = []string{
-		"name", "description", "provider", "isActive", "signingSecret",
+		"name", "description", "provider", "isActive", "signingSecret", "verifyToken",
 		"rejectInvalidSignatures", "rateLimitPerMinute", "ipFilterMode", "ipAllowlist",
 		"ipDenylist", "encryptFields", "maskFields", "dedupEnabled", "dedupStrategy",
 		"dedupWindowHours", "dedupCustomHeader", "transientMode", "allowedMethods",
@@ -70,7 +70,7 @@ func TestCreateSourceParamsFieldNames(t *testing.T) {
 	strategy := DedupProviderID
 	params := &CreateSourceParams{
 		Name: "n", Slug: "s", Provider: &provider, Description: &s,
-		SigningSecret: &s, RejectInvalidSignatures: &b, RateLimitPerMinute: &i,
+		SigningSecret: &s, VerifyToken: &s, RejectInvalidSignatures: &b, RateLimitPerMinute: &i,
 		IPFilterMode: &mode, IPAllowlist: []string{"203.0.113.0/24"}, IPDenylist: []string{"198.51.100.1"},
 		EncryptFields: []string{"$.a"}, MaskFields: []string{"$.b"},
 		DedupEnabled: &b, DedupStrategy: &strategy, DedupWindowHours: &i, DedupCustomHeader: &s,
@@ -90,7 +90,7 @@ func TestUpdateSourceParamsFieldNames(t *testing.T) {
 	strategy := DedupProviderID
 	params := &UpdateSourceParams{
 		Name: &s, Description: &s, Provider: &provider, IsActive: &b,
-		SigningSecret: &s, RejectInvalidSignatures: &b, RateLimitPerMinute: &i,
+		SigningSecret: &s, VerifyToken: &s, RejectInvalidSignatures: &b, RateLimitPerMinute: &i,
 		IPFilterMode: &mode, IPAllowlist: []string{"203.0.113.0/24"}, IPDenylist: []string{"198.51.100.1"},
 		EncryptFields: []string{"$.a"}, MaskFields: []string{"$.b"},
 		DedupEnabled: &b, DedupStrategy: &strategy, DedupWindowHours: &i, DedupCustomHeader: &s,

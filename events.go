@@ -83,8 +83,10 @@ type EventDebugInfo struct {
 
 // ListEventsParams are the parameters for listing events.
 type ListEventsParams struct {
-	Limit          *int                `json:"limit,omitempty"`
-	Offset         *int                `json:"offset,omitempty"`
+	Limit  *int `json:"limit,omitempty"`
+	Offset *int `json:"offset,omitempty"`
+	// SourceID filters by source, given as its ID or its slug. An unknown ID or slug is a
+	// *NotFoundError rather than an empty page.
 	SourceID       *string             `json:"sourceId,omitempty"`
 	EventType      *string             `json:"eventType,omitempty"`
 	Search         *string             `json:"search,omitempty"`
@@ -131,7 +133,8 @@ func (p *ListEventsParams) toQuery() url.Values {
 
 // ExportEventsParams are the parameters for exporting events.
 type ExportEventsParams struct {
-	Format         *string             `json:"format,omitempty"` // "json" or "csv"
+	Format *string `json:"format,omitempty"` // "json" or "csv"
+	// SourceID filters by source ID or slug; an unknown one is a *NotFoundError.
 	SourceID       *string             `json:"sourceId,omitempty"`
 	EventType      *string             `json:"eventType,omitempty"`
 	Search         *string             `json:"search,omitempty"`
