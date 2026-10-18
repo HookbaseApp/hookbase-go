@@ -20,7 +20,7 @@ import (
 // sdkVersion is reported in the User-Agent. It must be bumped with the release tag: it sat at
 // 1.5.0 through v1.6.0, v1.7.0 and v1.8.0, so those releases all identified themselves to the
 // API as 1.5.0.
-const sdkVersion = "1.10.0"
+const sdkVersion = "1.11.0"
 
 type transport struct {
 	apiKey     string
