@@ -2,13 +2,14 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
 // DLQMessage represents a dead letter queue message.
 type DLQMessage struct {
 	ID                 string  `json:"id"`
-	MessageID          string  `json:"messageId"`
+	EventID            string  `json:"eventId"`
 	EndpointID         string  `json:"endpointId"`
 	EndpointURL        *string `json:"endpointUrl,omitempty"`
 	ApplicationID      string  `json:"applicationId"`
@@ -17,24 +18,85 @@ type DLQMessage struct {
 	Status             string  `json:"status"`
 	DLQReason          *string `json:"dlqReason"`
 	DLQMovedAt         *string `json:"dlqMovedAt"`
+	DLQRetryCount      *int    `json:"dlqRetryCount"`
+	DLQLastRetryAt     *string `json:"dlqLastRetryAt"`
 	Attempts           int     `json:"attempts"`
 	MaxAttempts        int     `json:"maxAttempts"`
-	LastAttemptAt      *string `json:"lastAttemptAt"`
 	LastResponseStatus *int    `json:"lastResponseStatus"`
-	LastError          *string `json:"lastError"`
+	LastErrorType      *string `json:"lastErrorType"`
+	LastErrorMessage   *string `json:"lastErrorMessage"`
 	CreatedAt          string  `json:"createdAt"`
-	UpdatedAt          string  `json:"updatedAt"`
+	CompletedAt        *string `json:"completedAt"`
+
+	// Deprecated: never sent by the API; always empty. Use ID (the message) or EventID.
+	MessageID string `json:"-"`
+	// Deprecated: never sent by the API; always nil.
+	LastAttemptAt *string `json:"-"`
+	// Deprecated: the API calls this lastErrorMessage. Mirrors LastErrorMessage.
+	LastError *string `json:"-"`
+	// Deprecated: never sent by the API; always empty.
+	UpdatedAt string `json:"-"`
+}
+
+// UnmarshalJSON decodes a DLQ message and mirrors LastErrorMessage onto the deprecated LastError.
+func (m *DLQMessage) UnmarshalJSON(data []byte) error {
+	type plain DLQMessage
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*m = DLQMessage(decoded)
+	m.LastError = m.LastErrorMessage
+	return nil
+}
+
+// DLQEndpointCount is the DLQ message count for one endpoint.
+type DLQEndpointCount struct {
+	EndpointID  string `json:"endpointId"`
+	EndpointURL string `json:"endpointUrl"`
+	Count       int    `json:"count"`
+}
+
+// DLQEventTypeCount is the DLQ message count for one event type.
+type DLQEventTypeCount struct {
+	EventType string `json:"eventType"`
+	Count     int    `json:"count"`
 }
 
 // DLQStats contains DLQ statistics.
 type DLQStats struct {
-	Total               int            `json:"total"`
-	ByReason            map[string]int `json:"byReason"`
+	Total    int            `json:"total"`
+	ByReason map[string]int `json:"byReason"`
+	// ByEndpoint lists the (up to 10) endpoints with the most DLQ messages, most first.
+	ByEndpoint []DLQEndpointCount `json:"byEndpoint"`
+	// ByEventType lists the (up to 10) event types with the most DLQ messages, most first.
+	ByEventType []DLQEventTypeCount `json:"byEventType"`
+
+	// Deprecated: the API calls this byEndpoint. Mirrors ByEndpoint.
 	TopFailingEndpoints []struct {
 		EndpointID  string `json:"endpointId"`
 		EndpointURL string `json:"endpointUrl"`
 		Count       int    `json:"count"`
-	} `json:"topFailingEndpoints"`
+	} `json:"-"`
+}
+
+// UnmarshalJSON decodes DLQ stats and mirrors ByEndpoint onto the deprecated TopFailingEndpoints.
+func (s *DLQStats) UnmarshalJSON(data []byte) error {
+	type plain DLQStats
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = DLQStats(decoded)
+	s.TopFailingEndpoints = nil
+	for _, e := range s.ByEndpoint {
+		s.TopFailingEndpoints = append(s.TopFailingEndpoints, struct {
+			EndpointID  string `json:"endpointId"`
+			EndpointURL string `json:"endpointUrl"`
+			Count       int    `json:"count"`
+		}(e))
+	}
+	return nil
 }
 
 // DLQRetryResult is the result of retrying a DLQ message.
@@ -44,33 +106,84 @@ type DLQRetryResult struct {
 	Status            string `json:"status"`
 }
 
+// DLQRetriedMessage pairs a retried DLQ message with the new message created for it.
+type DLQRetriedMessage struct {
+	OriginalMessageID string `json:"originalMessageId"`
+	NewMessageID      string `json:"newMessageId"`
+}
+
 // DLQBulkRetryResult is the result of retrying multiple DLQ messages.
 type DLQBulkRetryResult struct {
-	Total   int `json:"total"`
-	Retried int `json:"retried"`
-	Failed  int `json:"failed"`
+	// Queued is the number of messages re-queued.
+	Queued int `json:"queued"`
+	// Skipped is the number of requested IDs that were not DLQ messages of this organization.
+	Skipped int `json:"skipped"`
+	// Messages lists each re-queued message and its replacement.
+	Messages []DLQRetriedMessage `json:"messages"`
+
+	// Deprecated: not sent by the API. Set to Queued + Skipped.
+	Total int `json:"-"`
+	// Deprecated: not sent by the API. Mirrors Queued.
+	Retried int `json:"-"`
+	// Deprecated: not sent by the API. Mirrors Skipped.
+	Failed int `json:"-"`
+	// Deprecated: not sent by the API. Built from Messages, one entry per re-queued message
+	// with Status "queued"; skipped IDs do not appear.
 	Results []struct {
 		MessageID    string  `json:"messageId"`
 		Status       string  `json:"status"`
 		NewMessageID *string `json:"newMessageId,omitempty"`
 		Error        *string `json:"error,omitempty"`
-	} `json:"results"`
+	} `json:"-"`
+}
+
+// UnmarshalJSON decodes a bulk retry result and fills the deprecated fields from it.
+func (b *DLQBulkRetryResult) UnmarshalJSON(data []byte) error {
+	type plain DLQBulkRetryResult
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*b = DLQBulkRetryResult(decoded)
+	b.Total = b.Queued + b.Skipped
+	b.Retried = b.Queued
+	b.Failed = b.Skipped
+	b.Results = nil
+	for _, m := range b.Messages {
+		newID := m.NewMessageID
+		b.Results = append(b.Results, struct {
+			MessageID    string  `json:"messageId"`
+			Status       string  `json:"status"`
+			NewMessageID *string `json:"newMessageId,omitempty"`
+			Error        *string `json:"error,omitempty"`
+		}{MessageID: m.OriginalMessageID, Status: "queued", NewMessageID: &newID})
+	}
+	return nil
 }
 
 // DLQBulkDeleteResult is the result of deleting multiple DLQ messages.
 type DLQBulkDeleteResult struct {
-	Total   int `json:"total"`
+	// Deprecated: not sent by the API; always 0.
+	Total int `json:"total"`
+	// Deleted is the number of IDs submitted, not a count of messages actually removed.
 	Deleted int `json:"deleted"`
 }
 
 // ListDLQParams are the parameters for listing DLQ messages.
+//
+// Cursor is opaque: pass the previous page's NextCursor back unchanged, and stop when HasMore
+// is false.
 type ListDLQParams struct {
 	Limit         *int    `json:"limit,omitempty"`
 	Cursor        *string `json:"cursor,omitempty"`
 	EndpointID    *string `json:"endpointId,omitempty"`
 	ApplicationID *string `json:"applicationId,omitempty"`
-	DLQReason     *string `json:"dlqReason,omitempty"`
-	EventType     *string `json:"eventType,omitempty"`
+	// DLQReason filters by reason; it is sent as the API's "reason" query parameter.
+	DLQReason *string `json:"reason,omitempty"`
+	EventType *string `json:"eventType,omitempty"`
+	// StartDate and EndDate bound the time the message was moved to the DLQ (ISO 8601).
+	StartDate *string `json:"startDate,omitempty"`
+	EndDate   *string `json:"endDate,omitempty"`
 }
 
 func (p *ListDLQParams) toQuery() url.Values {
@@ -91,10 +204,16 @@ func (p *ListDLQParams) toQuery() url.Values {
 		q.Set("applicationId", *p.ApplicationID)
 	}
 	if p.DLQReason != nil {
-		q.Set("dlqReason", *p.DLQReason)
+		q.Set("reason", *p.DLQReason)
 	}
 	if p.EventType != nil {
 		q.Set("eventType", *p.EventType)
+	}
+	if p.StartDate != nil {
+		q.Set("startDate", *p.StartDate)
+	}
+	if p.EndDate != nil {
+		q.Set("endDate", *p.EndDate)
 	}
 	return q
 }

@@ -32,9 +32,9 @@ func main() {
 		log.Fatalf("Failed to send event: %v", err)
 	}
 
-	fmt.Printf("Message sent: %s\n", result.MessageID)
-	fmt.Printf("Delivered to %d endpoints\n", len(result.OutboundMessages))
-	for _, msg := range result.OutboundMessages {
-		fmt.Printf("  - Endpoint %s: %s\n", msg.EndpointID, msg.Status)
+	fmt.Printf("Event sent: %s\n", result.EventID)
+	fmt.Printf("Queued for %d endpoints\n", result.MessagesQueued)
+	for _, ep := range result.Endpoints {
+		fmt.Printf("  - Endpoint %s (%s)\n", ep.ID, ep.URL)
 	}
 }
