@@ -410,10 +410,17 @@ func headersFromMap(m map[string]string) []EndpointHeader {
 }
 
 // ListEndpointsParams are the parameters for listing endpoints.
+//
+// Pagination is by cursor: pass the previous page's NextCursor back unchanged as Cursor, and
+// stop when HasMore is false.
 type ListEndpointsParams struct {
-	Limit      *int  `json:"limit,omitempty"`
-	Offset     *int  `json:"offset,omitempty"`
-	IsDisabled *bool `json:"isDisabled,omitempty"`
+	Limit      *int    `json:"limit,omitempty"`
+	Cursor     *string `json:"cursor,omitempty"`
+	IsDisabled *bool   `json:"isDisabled,omitempty"`
+
+	// Deprecated: the API pages by cursor and ignores offsets; this is no longer sent. Use
+	// Cursor.
+	Offset *int `json:"-"`
 }
 
 func (p *ListEndpointsParams) toQuery() url.Values {
@@ -424,8 +431,8 @@ func (p *ListEndpointsParams) toQuery() url.Values {
 	if p.Limit != nil {
 		q.Set("limit", itoa(*p.Limit))
 	}
-	if p.Offset != nil {
-		q.Set("offset", itoa(*p.Offset))
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
 	}
 	if p.IsDisabled != nil {
 		q.Set("isDisabled", btoa(*p.IsDisabled))
@@ -511,15 +518,48 @@ func (r *EndpointsResource) Delete(ctx context.Context, applicationID, endpointI
 	return r.t.do(ctx, "DELETE", "/api/webhook-endpoints/"+url.PathEscape(endpointID), nil, nil, nil, opts...)
 }
 
-// RotateSecret rotates the signing secret for an endpoint.
+// RotateSecretParams are the parameters for rotating an endpoint's signing secret.
+type RotateSecretParams struct {
+	// GracePeriodSeconds is how long (0 to 86400) the previous secret stays valid. The API
+	// defaults to 3600 when nil.
+	GracePeriodSeconds *int `json:"gracePeriodSeconds,omitempty"`
+}
+
+// RotateSecretResult is the result of rotating an endpoint's signing secret.
+type RotateSecretResult struct {
+	// Secret is the new signing secret. It is only ever returned here.
+	Secret string `json:"secret"`
+	// PreviousSecretExpiresAt is when the previous secret stops being valid.
+	PreviousSecretExpiresAt string `json:"previousSecretExpiresAt"`
+	SecretVersion           int    `json:"secretVersion"`
+}
+
+// RotateSecret rotates the signing secret for an endpoint and returns the new secret. The
+// previous secret stays valid for the API's default grace period; use RotateSecretWithParams to
+// set it, or to read the expiry and version.
 func (r *EndpointsResource) RotateSecret(ctx context.Context, applicationID, endpointID string, opts ...RequestOption) (string, error) {
-	var resp struct {
-		Secret string `json:"secret"`
-	}
-	if err := r.t.do(ctx, "POST", "/api/webhook-endpoints/"+url.PathEscape(endpointID)+"/rotate-secret", nil, nil, &resp, opts...); err != nil {
+	res, err := r.RotateSecretWithParams(ctx, applicationID, endpointID, nil, opts...)
+	if err != nil {
 		return "", err
 	}
-	return resp.Secret, nil
+	return res.Secret, nil
+}
+
+// RotateSecretWithParams rotates the signing secret for an endpoint.
+//
+// It is not retried after a server error or a lost connection, since a second rotation would
+// replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
+// retries, and the API does not deduplicate rotations.
+func (r *EndpointsResource) RotateSecretWithParams(ctx context.Context, applicationID, endpointID string, params *RotateSecretParams, opts ...RequestOption) (*RotateSecretResult, error) {
+	var body interface{}
+	if params != nil {
+		body = params
+	}
+	var resp RotateSecretResult
+	if err := r.t.do(ctx, "POST", "/api/webhook-endpoints/"+url.PathEscape(endpointID)+"/rotate-secret", nil, body, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // Enable enables a disabled endpoint.

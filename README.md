@@ -125,7 +125,34 @@ result, err := client.Messages.Send(ctx, "app_123", &hookbase.SendMessageParams{
         "amount":  9999,
     },
 })
-fmt.Printf("Sent to %d endpoints\n", len(result.OutboundMessages))
+fmt.Printf("Event %s queued for %d endpoints\n", result.EventID, result.MessagesQueued)
+```
+
+`Send` always carries an idempotency key, in the body and the `Idempotency-Key` header. Set
+`IdempotencyKey` (or pass `hookbase.WithIdempotencyKey`) to deduplicate across your own retries;
+otherwise the SDK generates one per call, so its own retries never deliver an event twice. Set
+`EndpointIDs` to target specific endpoints.
+
+### Paginate a List
+
+Outbound lists (applications, endpoints, event types, subscriptions, messages, DLQ) page by an
+opaque cursor:
+
+```go
+params := &hookbase.ListEndpointsParams{Limit: hookbase.Ptr(100)}
+for {
+    page, err := client.Endpoints.List(ctx, "app_123", params)
+    if err != nil {
+        return err
+    }
+    for _, ep := range page.Data {
+        fmt.Println(ep.ID)
+    }
+    if !page.HasMore || page.NextCursor == nil {
+        break
+    }
+    params.Cursor = page.NextCursor
+}
 ```
 
 ### Replay Failed Deliveries
@@ -226,7 +253,10 @@ if err != nil {
 
 ## Retry Behavior
 
-- Retries on 5xx errors and 429 (rate limit) with exponential backoff
+- Retries on 5xx errors, network errors and 429 (rate limit) with exponential backoff
+- A `POST` is retried after a 5xx or network error only when it carries an idempotency key
+  (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
+  a duplicate
 - No retry on 4xx client errors (400, 401, 403, 404)
 - Default: 3 retries with 1s base backoff, 10s max, random jitter
 - Rate limit errors respect the `Retry-After` header

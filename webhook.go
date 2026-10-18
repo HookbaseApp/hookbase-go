@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -21,15 +22,29 @@ type Webhook struct {
 }
 
 // NewWebhook creates a new Webhook verifier with the given signing secret.
-// The secret may be prefixed with "whsec_" and is expected to be base64-encoded.
+//
+// The secret is decoded the way the API decodes it when signing: a "whsec_" prefix and then an
+// "op_" infix (operational-webhook secrets, "whsec_op_<base64>") are stripped; a remaining 64
+// hex characters is a legacy hex secret; anything else is base64.
 func NewWebhook(secret string) *Webhook {
 	if secret == "" {
 		panic("hookbase: webhook secret is required")
 	}
+	return &Webhook{secret: decodeWebhookSecret(secret)}
+}
 
-	s := secret
-	if strings.HasPrefix(s, "whsec_") {
-		s = s[6:]
+// decodeWebhookSecret mirrors decodeSecret in the API's outbound-signature.ts.
+func decodeWebhookSecret(secret string) []byte {
+	s := strings.TrimPrefix(secret, "whsec_")
+	// base64 never contains "_", so this cannot trim a regular base64 secret.
+	s = strings.TrimPrefix(s, "op_")
+
+	// Check hex first: a 64-character hex string is also valid base64, and decoding a legacy
+	// hex secret as base64 yields the wrong key.
+	if len(s) == 64 {
+		if decoded, err := hex.DecodeString(s); err == nil {
+			return decoded
+		}
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(s)
@@ -37,8 +52,7 @@ func NewWebhook(secret string) *Webhook {
 		// Try raw bytes if not valid base64
 		decoded = []byte(s)
 	}
-
-	return &Webhook{secret: decoded}
+	return decoded
 }
 
 // Verify verifies the webhook signature and returns an error if verification fails.

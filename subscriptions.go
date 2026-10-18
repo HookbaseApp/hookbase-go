@@ -2,18 +2,34 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
 // Subscription links an endpoint to an event type.
 type Subscription struct {
-	ID            string `json:"id"`
-	EndpointID    string `json:"endpointId"`
-	EventTypeID   string `json:"eventTypeId"`
-	EventTypeName string `json:"eventTypeName"`
-	IsEnabled     bool   `json:"isEnabled"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	ID               string          `json:"id"`
+	EndpointID       string          `json:"endpointId"`
+	EventTypeID      string          `json:"eventTypeId"`
+	FilterExpression *string         `json:"filterExpression,omitempty"`
+	LabelFilters     json.RawMessage `json:"labelFilters,omitempty"`
+	LabelFilterMode  *string         `json:"labelFilterMode,omitempty"`
+	TransformID      *string         `json:"transformId,omitempty"`
+	PriorityOverride *int            `json:"priorityOverride,omitempty"`
+	IsEnabled        bool            `json:"isEnabled"`
+	CreatedAt        string          `json:"createdAt"`
+	CreatedBy        *string         `json:"createdBy,omitempty"`
+	APIKeyID         *string         `json:"apiKeyId,omitempty"`
+
+	// Joined fields returned by List only.
+	EventTypeName        string  `json:"eventTypeName"`
+	EventTypeDisplayName *string `json:"eventTypeDisplayName,omitempty"`
+	EndpointURL          string  `json:"endpointUrl,omitempty"`
+	ApplicationID        string  `json:"applicationId,omitempty"`
+	ApplicationName      string  `json:"applicationName,omitempty"`
+
+	// Deprecated: never sent by the API; always empty.
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // CreateSubscriptionParams are the parameters for creating a subscription.
@@ -28,12 +44,19 @@ type UpdateSubscriptionParams struct {
 }
 
 // ListSubscriptionsParams are the parameters for listing subscriptions.
+//
+// Pagination is by cursor: pass the previous page's NextCursor back unchanged as Cursor, and
+// stop when HasMore is false.
 type ListSubscriptionsParams struct {
 	Limit       *int    `json:"limit,omitempty"`
-	Offset      *int    `json:"offset,omitempty"`
+	Cursor      *string `json:"cursor,omitempty"`
 	EndpointID  *string `json:"endpointId,omitempty"`
 	EventTypeID *string `json:"eventTypeId,omitempty"`
 	IsEnabled   *bool   `json:"isEnabled,omitempty"`
+
+	// Deprecated: the API pages by cursor and ignores offsets; this is no longer sent. Use
+	// Cursor.
+	Offset *int `json:"-"`
 }
 
 func (p *ListSubscriptionsParams) toQuery() url.Values {
@@ -44,8 +67,8 @@ func (p *ListSubscriptionsParams) toQuery() url.Values {
 	if p.Limit != nil {
 		q.Set("limit", itoa(*p.Limit))
 	}
-	if p.Offset != nil {
-		q.Set("offset", itoa(*p.Offset))
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
 	}
 	if p.EndpointID != nil {
 		q.Set("endpointId", *p.EndpointID)

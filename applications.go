@@ -76,10 +76,17 @@ type UpdateApplicationParams struct {
 }
 
 // ListApplicationsParams are the parameters for listing applications.
+//
+// Pagination is by cursor: pass the previous page's NextCursor back unchanged as Cursor, and
+// stop when HasMore is false.
 type ListApplicationsParams struct {
 	Limit  *int    `json:"limit,omitempty"`
-	Offset *int    `json:"offset,omitempty"`
+	Cursor *string `json:"cursor,omitempty"`
 	Search *string `json:"search,omitempty"`
+
+	// Deprecated: the API pages by cursor and ignores offsets; this is no longer sent. Use
+	// Cursor.
+	Offset *int `json:"-"`
 }
 
 func (p *ListApplicationsParams) toQuery() url.Values {
@@ -90,8 +97,8 @@ func (p *ListApplicationsParams) toQuery() url.Values {
 	if p.Limit != nil {
 		q.Set("limit", itoa(*p.Limit))
 	}
-	if p.Offset != nil {
-		q.Set("offset", itoa(*p.Offset))
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
 	}
 	if p.Search != nil {
 		q.Set("search", *p.Search)

@@ -3,6 +3,7 @@ package hookbase
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,6 +58,12 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 		maxRetries = *rc.maxRetries
 	}
 
+	// A POST is not idempotent unless it carries an idempotency key: if a 5xx or a dropped
+	// connection hides whether the server acted on it, resending could create a second resource
+	// or deliver an event twice. Such requests are only retried on 429, which the API returns
+	// before doing any work.
+	retryOnServerError := method != "POST" || rc.idempotencyKey != ""
+
 	// Build URL
 	u := t.baseURL + path
 	if len(query) > 0 {
@@ -108,7 +115,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 			if ctx.Err() != nil {
 				return &TimeoutError{Message: ctx.Err().Error()}
 			}
-			if attempt < maxRetries {
+			if attempt < maxRetries && retryOnServerError {
 				t.backoff(attempt)
 				continue
 			}
@@ -119,7 +126,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			lastErr = &NetworkError{Message: "failed to read response body", Cause: err}
-			if attempt < maxRetries {
+			if attempt < maxRetries && retryOnServerError {
 				t.backoff(attempt)
 				continue
 			}
@@ -135,6 +142,12 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			if resp.StatusCode == 204 || out == nil {
+				return nil
+			}
+			// A *[]byte receives the raw body, for endpoints that can answer with something
+			// other than JSON (the CSV export).
+			if raw, ok := out.(*[]byte); ok {
+				*raw = respBody
 				return nil
 			}
 			if err := json.Unmarshal(respBody, out); err != nil {
@@ -160,10 +173,11 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 
 		// Retry 5xx
 		lastErr = apiErr
-		if attempt < maxRetries {
+		if attempt < maxRetries && retryOnServerError {
 			t.backoff(attempt)
 			continue
 		}
+		return lastErr
 	}
 
 	return lastErr
@@ -283,6 +297,19 @@ func buildQuery(params map[string]interface{}) url.Values {
 		}
 	}
 	return q
+}
+
+// newIdempotencyKey returns a random (version 4) UUID for use as an idempotency key.
+func newIdempotencyKey() string {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		// crypto/rand does not fail on supported platforms; fall back to the clock rather than
+		// sending no key at all.
+		return fmt.Sprintf("hb-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // joinIDs joins a slice of IDs into a comma-separated string.
