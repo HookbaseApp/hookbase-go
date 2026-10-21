@@ -489,15 +489,25 @@ func (r *DestinationsResource) Export(ctx context.Context, ids []string, opts ..
 
 // ImportDestinationsParams are the parameters for importing destinations.
 type ImportDestinationsParams struct {
-	Destinations     []map[string]interface{} `json:"destinations"`
-	ConflictStrategy *string                  `json:"conflictStrategy,omitempty"`
-	ValidateOnly     *bool                    `json:"validateOnly,omitempty"`
+	Destinations []map[string]interface{} `json:"destinations"`
+	// ConflictStrategy is what to do with an item whose slug already exists: skip, rename or
+	// overwrite. The API requires one; Import sends skip when it is nil.
+	ConflictStrategy *string `json:"conflictStrategy,omitempty"`
+	// ValidateOnly reports what would happen without changing anything.
+	ValidateOnly *bool `json:"validateOnly,omitempty"`
 }
 
 // Import imports destinations from JSON.
 func (r *DestinationsResource) Import(ctx context.Context, params *ImportDestinationsParams, opts ...RequestOption) (*ImportResult, error) {
 	var resp ImportResult
-	if err := r.t.do(ctx, "POST", "/api/destinations/import", nil, params, &resp, opts...); err != nil {
+	body := ImportDestinationsParams{}
+	if params != nil {
+		body = *params
+	}
+	if body.ConflictStrategy == nil {
+		body.ConflictStrategy = Ptr(defaultConflictStrategy)
+	}
+	if err := r.t.do(ctx, "POST", "/api/destinations/import", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil

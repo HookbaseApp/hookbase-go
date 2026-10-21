@@ -64,3 +64,32 @@ func (j *JSONString[T]) UnmarshalJSON(data []byte) error {
 	json.Unmarshal([]byte(s), &j.Value)
 	return nil
 }
+
+// boolAsInt decodes a JSON boolean into the 1/0 *int some older response types declare. The API
+// sends signatureValid as a real boolean, which encoding/json refuses to put in an int, failing the
+// whole response; this keeps those fields' type (true is 1, false is 0, null is nil). A number is
+// accepted too.
+type boolAsInt struct {
+	v *int
+}
+
+func (b *boolAsInt) UnmarshalJSON(data []byte) error {
+	var raw interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	switch v := raw.(type) {
+	case bool:
+		n := 0
+		if v {
+			n = 1
+		}
+		b.v = &n
+	case float64:
+		n := int(v)
+		b.v = &n
+	default:
+		b.v = nil
+	}
+	return nil
+}

@@ -155,6 +155,10 @@ for {
 }
 ```
 
+Inbound events page the same way: `client.Events.List` returns `NextCursor` on its page, which
+goes back as `ListEventsParams.Cursor`. Deliveries page by `Offset`; advance it by
+`len(page.Data)`, since the API caps `Limit` at 100.
+
 ### Replay Failed Deliveries
 
 ```go

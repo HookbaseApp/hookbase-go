@@ -90,12 +90,22 @@ type TransformTestParams struct {
 	Payload       interface{}    `json:"payload"`
 }
 
-// TransformTestResult is the result of testing a transform.
+// TransformTestResult is the result of testing a transform. A transform that fails to run is
+// reported here with Success false and Error set, not as an error from Test.
+//
+// The API answers with `result`/`contentType` (api/src/routes/transforms.ts); Output keeps its
+// name as the SDK's public contract and the tag maps it onto `result`.
 type TransformTestResult struct {
-	Success         bool        `json:"success"`
-	Output          interface{} `json:"output,omitempty"`
-	Error           *string     `json:"error,omitempty"`
-	ExecutionTimeMs *int        `json:"executionTimeMs,omitempty"`
+	Success bool `json:"success"`
+	// Output is the transform's output (the API's result): parsed JSON when the output is JSON,
+	// otherwise a string.
+	Output interface{} `json:"result,omitempty"`
+	// ContentType is the output's content type, e.g. application/json.
+	ContentType string  `json:"contentType,omitempty"`
+	Error       *string `json:"error,omitempty"`
+
+	// Deprecated: always nil; the API does not report an execution time.
+	ExecutionTimeMs *int `json:"-"`
 }
 
 // TransformsResource provides access to transform-related API endpoints.
