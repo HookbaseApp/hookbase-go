@@ -2,6 +2,7 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
@@ -9,22 +10,69 @@ import (
 type Tunnel struct {
 	ID             string  `json:"id"`
 	OrganizationID string  `json:"organizationId"`
+	UserID         *string `json:"userId"`
 	Name           string  `json:"name"`
-	LocalPort      int     `json:"localPort"`
-	Subdomain      *string `json:"subdomain"`
-	Status         string  `json:"status"`
-	PublicURL      *string `json:"publicUrl"`
-	ConnectedAt    *string `json:"connectedAt"`
-	AuthToken      *string `json:"authToken,omitempty"` // Only returned on create
-	CreatedAt      string  `json:"createdAt"`
-	UpdatedAt      string  `json:"updatedAt"`
+	// LocalPort is always zero today: the API records no port for a tunnel. The local port is a
+	// CLI option at connect time.
+	LocalPort int     `json:"localPort"`
+	Subdomain *string `json:"subdomain"`
+	// Status is e.g. connected or disconnected.
+	Status string `json:"status"`
+	// Direction is inbound or bidirectional.
+	Direction string `json:"direction"`
+	// AllowedHosts are the hosts a bidirectional tunnel may reach; empty when unrestricted.
+	AllowedHosts    JSONString[[]string] `json:"allowedHosts"`
+	LastConnectedAt *string              `json:"lastConnectedAt"`
+	LastRequestAt   *string              `json:"lastRequestAt"`
+	TotalRequests   int                  `json:"totalRequests"`
+	// AuthToken is the token the CLI connects with. It is set on the Create response only, where
+	// the API sends it as auth_token; List and Get never return it.
+	AuthToken *string `json:"authToken,omitempty"`
+	CreatedAt string  `json:"createdAt"`
+
+	// The fields below name response keys the API does not send; they decoded to the zero value
+	// on every version of this SDK that declared them. They are kept, tagged json:"-", so existing
+	// code still compiles. They will go in v2.
+
+	// Deprecated: always nil. The public URL is <app URL>/t/<Subdomain>.
+	PublicURL *string `json:"-"`
+	// Deprecated: always nil. Use LastConnectedAt.
+	ConnectedAt *string `json:"-"`
+	// Deprecated: always empty; tunnels have no updatedAt.
+	UpdatedAt string `json:"-"`
+}
+
+// UnmarshalJSON also accepts the auth_token key the create response uses for AuthToken. The
+// named type drops the method set, so this does not recurse.
+func (t *Tunnel) UnmarshalJSON(data []byte) error {
+	type wire Tunnel
+	aux := struct {
+		*wire
+		SnakeAuthToken *string `json:"auth_token"`
+	}{wire: (*wire)(t)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if t.AuthToken == nil && aux.SnakeAuthToken != nil {
+		t.AuthToken = aux.SnakeAuthToken
+	}
+	return nil
 }
 
 // CreateTunnelParams are the parameters for creating a tunnel.
 type CreateTunnelParams struct {
-	Name      string  `json:"name"`
-	LocalPort int     `json:"localPort"`
+	Name string `json:"name"`
+	// Subdomain is the subdomain to request; one is generated when it is nil. A taken subdomain
+	// is a 409.
 	Subdomain *string `json:"subdomain,omitempty"`
+	// Direction is inbound (the default) or bidirectional (Pro and Business plans).
+	Direction *string `json:"direction,omitempty"`
+	// AllowedHosts are the hosts a bidirectional tunnel may reach, at most 20.
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
+
+	// Deprecated: never accepted. The API ignores a port at create time and stores none; the local
+	// port is a CLI option at connect time. This is no longer sent.
+	LocalPort int `json:"-"`
 }
 
 // TunnelsResource provides access to tunnel-related API endpoints.

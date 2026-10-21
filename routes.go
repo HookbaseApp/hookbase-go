@@ -122,13 +122,29 @@ func (p *ListRoutesParams) toQuery() url.Values {
 }
 
 // CircuitStatusInfo contains circuit breaker status for a route.
+//
+// GET /api/routes/:id/circuit-status (api/src/routes/routes.ts) sends the settings without the
+// circuit prefix — cooldownSeconds, failureThreshold, probeSuccessThreshold — and fills in the
+// defaults (300, 5 and 2) for unset ones. The Go field names stay as the SDK's public contract;
+// the tags map them onto those keys.
 type CircuitStatusInfo struct {
-	CircuitState                 CircuitState `json:"circuitState"`
-	CircuitOpenedAt              *string      `json:"circuitOpenedAt"`
-	CircuitCooldownSeconds       int          `json:"circuitCooldownSeconds"`
-	CircuitFailureThreshold      int          `json:"circuitFailureThreshold"`
-	CircuitProbeSuccessThreshold int          `json:"circuitProbeSuccessThreshold"`
-	RecentFailures               int          `json:"recentFailures"`
+	CircuitState    CircuitState `json:"circuitState"`
+	CircuitOpenedAt *string      `json:"circuitOpenedAt"`
+	// CircuitCooldownSeconds is how long an open circuit waits before probing (cooldownSeconds).
+	CircuitCooldownSeconds int `json:"cooldownSeconds"`
+	// CircuitFailureThreshold is the failures in a row that open the circuit (failureThreshold).
+	CircuitFailureThreshold int `json:"failureThreshold"`
+	// CircuitProbeSuccessThreshold is the successful probes that close it (probeSuccessThreshold).
+	CircuitProbeSuccessThreshold int `json:"probeSuccessThreshold"`
+	// ProbeAttempts is the probes made since the circuit half-opened.
+	ProbeAttempts int `json:"probeAttempts"`
+	// ConsecutiveFailures is the failures in a row so far.
+	ConsecutiveFailures int `json:"consecutiveFailures"`
+	// TimeUntilProbeSeconds is the seconds until an open circuit half-opens; nil unless open.
+	TimeUntilProbeSeconds *int `json:"timeUntilProbeSeconds"`
+
+	// Deprecated: always zero; the API sends no recentFailures. Use ConsecutiveFailures.
+	RecentFailures int `json:"-"`
 }
 
 // CircuitBreakerConfig is the configuration for a circuit breaker.
@@ -250,15 +266,25 @@ func (r *RoutesResource) Export(ctx context.Context, ids []string, opts ...Reque
 
 // ImportRoutesParams are the parameters for importing routes.
 type ImportRoutesParams struct {
-	Routes           []map[string]interface{} `json:"routes"`
-	ConflictStrategy *string                  `json:"conflictStrategy,omitempty"`
-	ValidateOnly     *bool                    `json:"validateOnly,omitempty"`
+	Routes []map[string]interface{} `json:"routes"`
+	// ConflictStrategy is what to do with an item whose name already exists: skip, rename or
+	// overwrite. The API requires one; Import sends skip when it is nil.
+	ConflictStrategy *string `json:"conflictStrategy,omitempty"`
+	// ValidateOnly reports what would happen without changing anything.
+	ValidateOnly *bool `json:"validateOnly,omitempty"`
 }
 
 // Import imports routes from JSON.
 func (r *RoutesResource) Import(ctx context.Context, params *ImportRoutesParams, opts ...RequestOption) (*ImportResult, error) {
 	var resp ImportResult
-	if err := r.t.do(ctx, "POST", "/api/routes/import", nil, params, &resp, opts...); err != nil {
+	body := ImportRoutesParams{}
+	if params != nil {
+		body = *params
+	}
+	if body.ConflictStrategy == nil {
+		body.ConflictStrategy = Ptr(defaultConflictStrategy)
+	}
+	if err := r.t.do(ctx, "POST", "/api/routes/import", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil

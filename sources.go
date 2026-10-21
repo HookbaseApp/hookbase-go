@@ -568,21 +568,122 @@ func (r *SourcesResource) Export(ctx context.Context, ids []string, opts ...Requ
 
 // ImportSourcesParams are the parameters for importing sources.
 type ImportSourcesParams struct {
-	Sources          []map[string]interface{} `json:"sources"`
-	ConflictStrategy *string                  `json:"conflictStrategy,omitempty"`
-	ValidateOnly     *bool                    `json:"validateOnly,omitempty"`
+	Sources []map[string]interface{} `json:"sources"`
+	// ConflictStrategy is what to do with an item whose slug already exists: skip, rename or
+	// overwrite. The API requires one; Import sends skip when it is nil.
+	ConflictStrategy *string `json:"conflictStrategy,omitempty"`
+	// ValidateOnly reports what would happen without changing anything.
+	ValidateOnly *bool `json:"validateOnly,omitempty"`
 }
 
-// ImportResult is the result of an import operation.
+// defaultConflictStrategy is what the Import methods send when ConflictStrategy is nil: the API
+// rejects an import without one, and skip is what the other Hookbase SDKs send.
+const defaultConflictStrategy = "skip"
+
+// ImportResult is the result of importing sources, destinations or routes.
+//
+// The API answers in a few shapes (the import handlers in api/src/routes/sources.ts,
+// destinations.ts and routes.ts), all decoded here; a field a given call does not send is left at
+// its zero value:
+//
+//   - sources and destinations, applied: Success, Summary (Imported, Skipped, Overwritten,
+//     Failed) and Details (the names, and the failures with their error);
+//   - sources and destinations with ValidateOnly: Valid, ValidationResults and Summary (Total,
+//     ToCreate, ToOverwrite, ToSkip, Errors);
+//   - routes, applied: Success, ImportedNames, SkippedNames, Failures and Summary (Total,
+//     Imported, Skipped, Errors);
+//   - routes with ValidateOnly: Success, ValidateOnly, ValidationResults and Summary (Total,
+//     Valid, Skipped, Overwrite, Errors).
 type ImportResult struct {
-	Success  bool           `json:"success"`
-	Imported int            `json:"imported"`
-	Skipped  int            `json:"skipped"`
-	Errors   int            `json:"errors"`
-	Results  []ImportDetail `json:"results"`
+	Success bool `json:"success"`
+	// Valid is set by a validate-only source or destination import: whether no item has status
+	// error.
+	Valid *bool `json:"valid,omitempty"`
+	// ValidateOnly is true on a validate-only route import.
+	ValidateOnly      bool                     `json:"validateOnly,omitempty"`
+	Summary           *ImportSummary           `json:"summary,omitempty"`
+	Details           *ImportDetails           `json:"details,omitempty"`
+	ValidationResults []ImportValidationResult `json:"validationResults,omitempty"`
+	// ImportedNames is set by a route import: the names of the routes created.
+	ImportedNames []string `json:"imported,omitempty"`
+	// SkippedNames is set by a route import: the names of the routes skipped.
+	SkippedNames []string `json:"skipped,omitempty"`
+	// Failures is set by a route import: the routes that failed, and why.
+	Failures []ImportFailure `json:"errors,omitempty"`
+
+	// The fields below name keys the API has never sent in this shape: imported, skipped and
+	// errors are lists of names on a route import (an error to decode into these ints) and absent
+	// on the others. They are kept, tagged json:"-", so existing code still compiles. They will go
+	// in v2.
+
+	// Deprecated: always zero. Use Summary.Imported.
+	Imported int `json:"-"`
+	// Deprecated: always zero. Use Summary.Skipped.
+	Skipped int `json:"-"`
+	// Deprecated: always zero. Use Summary.Failed (sources, destinations) or Summary.Errors
+	// (routes, and every validate-only import).
+	Errors int `json:"-"`
+	// Deprecated: always nil. Use Details (sources, destinations), ImportedNames, SkippedNames and
+	// Failures (routes), or ValidationResults (validate-only).
+	Results []ImportDetail `json:"-"`
+}
+
+// ImportSummary holds the counts from an import. Which ones are set depends on the resource and on
+// ValidateOnly; see ImportResult. Unset counts are nil.
+type ImportSummary struct {
+	Total    *int `json:"total,omitempty"`
+	Imported *int `json:"imported,omitempty"`
+	Skipped  *int `json:"skipped,omitempty"`
+	// Overwritten is set by an applied source or destination import.
+	Overwritten *int `json:"overwritten,omitempty"`
+	// Failed is set by an applied source or destination import.
+	Failed *int `json:"failed,omitempty"`
+	// Errors is set by a route import and by every validate-only import.
+	Errors      *int `json:"errors,omitempty"`
+	ToCreate    *int `json:"toCreate,omitempty"`
+	ToOverwrite *int `json:"toOverwrite,omitempty"`
+	ToSkip      *int `json:"toSkip,omitempty"`
+	// Valid is set by a validate-only route import: the routes that would be created.
+	Valid *int `json:"valid,omitempty"`
+	// Overwrite is set by a validate-only route import: the routes that would be overwritten.
+	Overwrite *int `json:"overwrite,omitempty"`
+}
+
+// ImportDetails is the per-item outcome of an applied source or destination import, by name.
+type ImportDetails struct {
+	Imported    []string        `json:"imported"`
+	Skipped     []string        `json:"skipped"`
+	Overwritten []string        `json:"overwritten"`
+	Failed      []ImportFailure `json:"failed"`
+}
+
+// ImportFailure is an imported item that failed, and why.
+type ImportFailure struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+// ImportValidationResult is how one item of an import was, or would be, handled.
+type ImportValidationResult struct {
+	// Index is the item's position in the list sent.
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+	// Slug is set for sources and destinations only.
+	Slug string `json:"slug,omitempty"`
+	// Status is valid, error, skip, rename or overwrite.
+	Status   string   `json:"status"`
+	Errors   []string `json:"errors"`
+	Warnings []string `json:"warnings"`
+	// ResolvedSlug is the slug a source or destination gets under the rename strategy.
+	ResolvedSlug *string `json:"resolvedSlug,omitempty"`
+	// ResolvedName is the name a route gets under the rename strategy.
+	ResolvedName *string `json:"resolvedName,omitempty"`
 }
 
 // ImportDetail describes the result of importing a single item.
+//
+// Deprecated: the API sends no per-item results in this shape; ImportResult.Results is always
+// nil. See ImportDetails, ImportFailure and ImportValidationResult.
 type ImportDetail struct {
 	Name   string  `json:"name"`
 	Status string  `json:"status"`
@@ -592,7 +693,14 @@ type ImportDetail struct {
 // Import imports sources from JSON.
 func (r *SourcesResource) Import(ctx context.Context, params *ImportSourcesParams, opts ...RequestOption) (*ImportResult, error) {
 	var resp ImportResult
-	if err := r.t.do(ctx, "POST", "/api/sources/import", nil, params, &resp, opts...); err != nil {
+	body := ImportSourcesParams{}
+	if params != nil {
+		body = *params
+	}
+	if body.ConflictStrategy == nil {
+		body.ConflictStrategy = Ptr(defaultConflictStrategy)
+	}
+	if err := r.t.do(ctx, "POST", "/api/sources/import", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil
