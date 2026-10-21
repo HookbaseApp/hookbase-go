@@ -2,6 +2,7 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
@@ -12,14 +13,42 @@ type Schema struct {
 	Name           string  `json:"name"`
 	Slug           string  `json:"slug"`
 	Description    *string `json:"description"`
-	JSONSchema     string  `json:"jsonSchema"`
-	Version        int     `json:"version"`
-	Routes         []struct {
+	// JSONSchema is the schema document as JSON text. List returns it as a string and Get as an
+	// object; both decode to the same text.
+	JSONSchema string `json:"jsonSchema"`
+	Version    int    `json:"version"`
+	Routes     []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"routes,omitempty"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
+}
+
+// UnmarshalJSON accepts jsonSchema as a JSON string (list) or an object (get). Get used to fail
+// with "cannot unmarshal object into Go struct field Schema.schema.jsonSchema of type string".
+func (s *Schema) UnmarshalJSON(data []byte) error {
+	type plain Schema
+	var decoded struct {
+		plain
+		JSONSchema json.RawMessage `json:"jsonSchema"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = Schema(decoded.plain)
+	raw := decoded.JSONSchema
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+		s.JSONSchema = ""
+	case raw[0] == '"':
+		if err := json.Unmarshal(raw, &s.JSONSchema); err != nil {
+			return err
+		}
+	default:
+		s.JSONSchema = string(raw)
+	}
+	return nil
 }
 
 // CreateSchemaParams are the parameters for creating a schema.
