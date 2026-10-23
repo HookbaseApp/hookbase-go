@@ -614,10 +614,22 @@ func TestSurfaceOutbound(t *testing.T) {
 				return nil, c.Endpoints.Delete(ctx, "app_1", "ep_1")
 			},
 			method: "DELETE", path: "/api/webhook-endpoints/ep_1"},
-		{name: "Endpoints.TestWithParams", resp: obj("data", obj("success", true, "statusCode", 200)),
+		{name: "Endpoints.TestWithParams",
+			// The test route answers bare, not under "data" (routes/webhook-endpoints.ts).
+			resp: obj("success", false, "testEvent", obj("id", "evt_t", "type", "order.created", "timestamp", "2026-10-23T00:00:00Z"),
+				"delivery", obj("status", "failed", "responseStatus", 500, "responseTimeMs", 42, "responseBody", "boom", "errorMessage", nil),
+				"signature", obj("header", "webhook-signature", "value", "v1,abc", "timestamp", 1761177600)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
 				return c.Endpoints.TestWithParams(ctx, "app_1", "ep_1", &TestEndpointParams{EventType: Ptr("order.created"), Payload: obj("a", 1)})
-			}, method: "POST", path: "/api/webhook-endpoints/ep_1/test", body: obj("eventType", "order.created", "payload", obj("a", 1))},
+			}, method: "POST", path: "/api/webhook-endpoints/ep_1/test", body: obj("eventType", "order.created", "payload", obj("a", 1)),
+			check: func(t *testing.T, got interface{}) {
+				r := got.(*EndpointTestResult)
+				if r.Success || r.TestEvent.Type != "order.created" || r.Delivery.Status != "failed" ||
+					r.Delivery.ResponseStatus == nil || *r.Delivery.ResponseStatus != 500 || r.Delivery.ResponseBody != "boom" ||
+					r.Signature.Value != "v1,abc" || r.Signature.Timestamp.String() != "1761177600" {
+					t.Errorf("decoded %+v", r)
+				}
+			}},
 
 		{name: "Endpoints.Enable", resp: obj("data", obj("id", "ep_1", "isDisabled", false)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
