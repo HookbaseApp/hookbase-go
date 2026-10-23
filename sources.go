@@ -377,8 +377,10 @@ func (p UpdateSourceParams) MarshalJSON() ([]byte, error) {
 
 // ListSourcesParams are the parameters for listing sources.
 type ListSourcesParams struct {
-	Page     *int            `json:"page,omitempty"`
-	PageSize *int            `json:"pageSize,omitempty"`
+	Page     *int `json:"page,omitempty"`
+	PageSize *int `json:"pageSize,omitempty"`
+	// Deprecated: the API does not filter sources and ignores Search, Provider and IsActive; the
+	// page holds every source. Filter the returned sources yourself.
 	Search   *string         `json:"search,omitempty"`
 	Provider *SourceProvider `json:"provider,omitempty"`
 	IsActive *bool           `json:"isActive,omitempty"`

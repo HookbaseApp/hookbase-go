@@ -29,12 +29,17 @@ type Tunnel struct {
 	// the API sends it as auth_token; List and Get never return it.
 	AuthToken *string `json:"authToken,omitempty"`
 	CreatedAt string  `json:"createdAt"`
+	// TunnelURL is the tunnel's public URL (<app URL>/t/<Subdomain>). Set by Create only.
+	TunnelURL *string `json:"-"`
+	// WSURL is the WebSocket URL a client connects the tunnel on, token included. Set by Create
+	// only; treat it as a secret.
+	WSURL *string `json:"-"`
 
 	// The fields below name response keys the API does not send; they decoded to the zero value
 	// on every version of this SDK that declared them. They are kept, tagged json:"-", so existing
 	// code still compiles. They will go in v2.
 
-	// Deprecated: always nil. The public URL is <app URL>/t/<Subdomain>.
+	// Deprecated: set by Create only, to the same value as TunnelURL. Use TunnelURL.
 	PublicURL *string `json:"-"`
 	// Deprecated: always nil. Use LastConnectedAt.
 	ConnectedAt *string `json:"-"`
@@ -105,12 +110,32 @@ func (r *TunnelsResource) Get(ctx context.Context, id string, opts ...RequestOpt
 // Create creates a new tunnel.
 func (r *TunnelsResource) Create(ctx context.Context, params *CreateTunnelParams, opts ...RequestOption) (*Tunnel, error) {
 	var resp struct {
-		Tunnel Tunnel `json:"tunnel"`
+		Tunnel    Tunnel  `json:"tunnel"`
+		TunnelURL *string `json:"tunnelUrl"`
+		WSURL     *string `json:"wsUrl"`
 	}
 	if err := r.t.do(ctx, "POST", "/api/tunnels", nil, params, &resp, opts...); err != nil {
 		return nil, err
 	}
+	resp.Tunnel.TunnelURL = resp.TunnelURL
+	resp.Tunnel.PublicURL = resp.TunnelURL
+	resp.Tunnel.WSURL = resp.WSURL
 	return &resp.Tunnel, nil
+}
+
+// BulkDeleteTunnelsResult is the result of deleting several tunnels.
+type BulkDeleteTunnelsResult struct {
+	Success bool `json:"success"`
+	Deleted int  `json:"deleted"`
+}
+
+// BulkDelete deletes several tunnels at once.
+func (r *TunnelsResource) BulkDelete(ctx context.Context, ids []string, opts ...RequestOption) (*BulkDeleteTunnelsResult, error) {
+	var resp BulkDeleteTunnelsResult
+	if err := r.t.do(ctx, "DELETE", "/api/tunnels/bulk", nil, map[string]interface{}{"ids": ids}, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // Delete deletes a tunnel.

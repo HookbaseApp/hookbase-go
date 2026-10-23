@@ -2,6 +2,8 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/url"
 )
 
@@ -40,9 +42,55 @@ type Route struct {
 	FailureThreshold             *int                          `json:"failureThreshold"`
 	FailoverDestinationIDs       []string                      `json:"failoverDestinationIds"`
 	FailoverAfterAttempts        *int                          `json:"failoverAfterAttempts"`
-	ExpectedResponse             *string                       `json:"expectedResponse"`
-	CreatedAt                    string                        `json:"createdAt"`
-	UpdatedAt                    string                        `json:"updatedAt"`
+	// ExpectedResponse is the route's expected-response rule as JSON text, e.g.
+	// `{"statusCodes":[200]}`; nil when none is set. The API returns the parsed object, which this
+	// field used to fail to decode, failing the whole List or Get.
+	ExpectedResponse *string `json:"expectedResponse"`
+	CreatedAt        string  `json:"createdAt"`
+	UpdatedAt        string  `json:"updatedAt"`
+}
+
+// UnmarshalJSON keeps expectedResponse as JSON text whether the API sends an object or a string.
+func (r *Route) UnmarshalJSON(data []byte) error {
+	type plain Route
+	var w struct {
+		plain
+		ExpectedResponse json.RawMessage `json:"expectedResponse"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*r = Route(w.plain)
+	r.ExpectedResponse = rawJSONText(w.ExpectedResponse)
+	return nil
+}
+
+// rawJSONText returns a JSON value as text: a JSON string's contents, any other value verbatim,
+// and nil for a missing or null value.
+func rawJSONText(raw json.RawMessage) *string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var s string
+	if raw[0] == '"' && json.Unmarshal(raw, &s) == nil {
+		return &s
+	}
+	s = string(raw)
+	return &s
+}
+
+// expectedResponseWire is the request form of ExpectedResponse: the JSON document itself when the
+// text is valid JSON (the API stringifies whatever it gets, so sending the text as a JSON string
+// stored it double-encoded), otherwise the text as a string.
+func expectedResponseWire(v *string) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	if json.Valid([]byte(*v)) {
+		return json.RawMessage(*v)
+	}
+	b, _ := json.Marshal(*v)
+	return b
 }
 
 // CreateRouteParams are the parameters for creating a route.
@@ -64,7 +112,40 @@ type CreateRouteParams struct {
 	FailureThreshold       *int              `json:"failureThreshold,omitempty"`
 	FailoverDestinationIDs []string          `json:"failoverDestinationIds,omitempty"`
 	FailoverAfterAttempts  *int              `json:"failoverAfterAttempts,omitempty"`
-	ExpectedResponse       *string           `json:"expectedResponse,omitempty"`
+	// ExpectedResponse is the expected-response rule as JSON text, e.g. `{"statusCodes":[200]}`.
+	ExpectedResponse *string `json:"expectedResponse,omitempty"`
+	// Circuit breaker settings; nil uses the defaults (300 s cooldown, 5 failures, 2 probes).
+	CircuitCooldownSeconds       *int `json:"circuitCooldownSeconds,omitempty"`
+	CircuitFailureThreshold      *int `json:"circuitFailureThreshold,omitempty"`
+	CircuitProbeSuccessThreshold *int `json:"circuitProbeSuccessThreshold,omitempty"`
+}
+
+// MarshalJSON sends ExpectedResponse as the JSON document it holds.
+func (p CreateRouteParams) MarshalJSON() ([]byte, error) {
+	type wire CreateRouteParams
+	return json.Marshal(struct {
+		wire
+		ExpectedResponse json.RawMessage `json:"expectedResponse,omitempty"`
+	}{wire(p), expectedResponseWire(p.ExpectedResponse)})
+}
+
+// RouteField names a route setting, for UpdateRouteParams.Clear.
+type RouteField string
+
+// The route settings Clear can remove.
+const (
+	RouteFilterID               RouteField = "filterId"
+	RouteFilterConditions       RouteField = "filterConditions"
+	RouteTransformID            RouteField = "transformId"
+	RouteSchemaID               RouteField = "schemaId"
+	RouteNotifyEmails           RouteField = "notifyEmails"
+	RouteFailoverDestinationIDs RouteField = "failoverDestinationIds"
+	RouteExpectedResponse       RouteField = "expectedResponse"
+)
+
+var clearableRouteFields = map[RouteField]bool{
+	RouteFilterID: true, RouteFilterConditions: true, RouteTransformID: true, RouteSchemaID: true,
+	RouteNotifyEmails: true, RouteFailoverDestinationIDs: true, RouteExpectedResponse: true,
 }
 
 // UpdateRouteParams are the parameters for updating a route.
@@ -86,13 +167,48 @@ type UpdateRouteParams struct {
 	FailureThreshold       *int              `json:"failureThreshold,omitempty"`
 	FailoverDestinationIDs []string          `json:"failoverDestinationIds,omitempty"`
 	FailoverAfterAttempts  *int              `json:"failoverAfterAttempts,omitempty"`
-	ExpectedResponse       *string           `json:"expectedResponse,omitempty"`
+	// ExpectedResponse is the expected-response rule as JSON text, e.g. `{"statusCodes":[200]}`.
+	ExpectedResponse *string `json:"expectedResponse,omitempty"`
+
+	// Clear names settings to remove: nil and empty fields above mean "leave alone", so they cannot
+	// also mean "remove". Naming a field here sends a null for it, e.g. RouteFailoverDestinationIDs
+	// to drop every failover destination. Naming a field that is also set is an error.
+	Clear []RouteField `json:"-"`
+}
+
+// MarshalJSON sends ExpectedResponse as the JSON document it holds, and a null for each Clear
+// field.
+func (p UpdateRouteParams) MarshalJSON() ([]byte, error) {
+	type wire UpdateRouteParams
+	encoded, err := json.Marshal(struct {
+		wire
+		ExpectedResponse json.RawMessage `json:"expectedResponse,omitempty"`
+	}{wire(p), expectedResponseWire(p.ExpectedResponse)})
+	if err != nil || len(p.Clear) == 0 {
+		return encoded, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, err
+	}
+	for _, f := range p.Clear {
+		if !clearableRouteFields[f] {
+			return nil, fmt.Errorf("hookbase: UpdateRouteParams.Clear names %q, which cannot be cleared", string(f))
+		}
+		if _, set := body[string(f)]; set {
+			return nil, fmt.Errorf("hookbase: UpdateRouteParams.Clear names %q but that field is also set; clear it or set it, not both", string(f))
+		}
+		body[string(f)] = json.RawMessage("null")
+	}
+	return json.Marshal(body)
 }
 
 // ListRoutesParams are the parameters for listing routes.
 type ListRoutesParams struct {
-	Page          *int    `json:"page,omitempty"`
-	PageSize      *int    `json:"pageSize,omitempty"`
+	Page     *int `json:"page,omitempty"`
+	PageSize *int `json:"pageSize,omitempty"`
+	// Deprecated: the API does not filter routes and ignores SourceID, DestinationID and IsActive;
+	// the page holds every route. Filter the returned routes yourself.
 	SourceID      *string `json:"sourceId,omitempty"`
 	DestinationID *string `json:"destinationId,omitempty"`
 	IsActive      *bool   `json:"isActive,omitempty"`

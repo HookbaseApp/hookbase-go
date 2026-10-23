@@ -33,21 +33,23 @@ type CronJob struct {
 
 // CreateCronParams are the parameters for creating a cron job.
 type CreateCronParams struct {
-	Name            string            `json:"name"`
-	Description     *string           `json:"description,omitempty"`
-	Schedule        string            `json:"cronExpression"`
-	URL             string            `json:"url"`
-	Method          *string           `json:"method,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	Payload         *string           `json:"payload,omitempty"`
-	TimeoutMs       *int              `json:"timeoutMs,omitempty"`
-	Timezone        *string           `json:"timezone,omitempty"`
-	IsActive        *bool             `json:"isActive,omitempty"`
-	UseStaticIP     *bool             `json:"useStaticIp,omitempty"`
-	NotifyOnFailure *bool             `json:"notifyOnFailure,omitempty"`
-	NotifyOnSuccess *bool             `json:"notifyOnSuccess,omitempty"`
-	NotifyEmails    *string           `json:"notifyEmails,omitempty"`
-	GroupID         *string           `json:"groupId,omitempty"`
+	Name        string            `json:"name"`
+	Description *string           `json:"description,omitempty"`
+	Schedule    string            `json:"cronExpression"`
+	URL         string            `json:"url"`
+	Method      *string           `json:"method,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Payload     *string           `json:"payload,omitempty"`
+	TimeoutMs   *int              `json:"timeoutMs,omitempty"`
+	Timezone    *string           `json:"timezone,omitempty"`
+	// IsActive false creates the job paused. The create route does not read it (every job starts
+	// active), so Create applies it with a follow-up Update.
+	IsActive        *bool   `json:"-"`
+	UseStaticIP     *bool   `json:"useStaticIp,omitempty"`
+	NotifyOnFailure *bool   `json:"notifyOnFailure,omitempty"`
+	NotifyOnSuccess *bool   `json:"notifyOnSuccess,omitempty"`
+	NotifyEmails    *string `json:"notifyEmails,omitempty"`
+	GroupID         *string `json:"groupId,omitempty"`
 }
 
 // UpdateCronParams are the parameters for updating a cron job.
@@ -121,18 +123,20 @@ func (r *CronResource) Create(ctx context.Context, params *CreateCronParams, opt
 	if err := r.t.do(ctx, "POST", "/api/cron", nil, params, &resp, opts...); err != nil {
 		return nil, err
 	}
+	if params != nil && params.IsActive != nil && !*params.IsActive && resp.CronJob.ID != "" {
+		return r.Update(ctx, resp.CronJob.ID, &UpdateCronParams{IsActive: Ptr(false)}, opts...)
+	}
 	return &resp.CronJob, nil
 }
 
-// Update updates a cron job.
+// Update updates a cron job and returns it as it now stands. The PATCH route answers only
+// {"success": true}, so Update reads the job back with Get (two requests); it used to return an
+// empty CronJob.
 func (r *CronResource) Update(ctx context.Context, id string, params *UpdateCronParams, opts ...RequestOption) (*CronJob, error) {
-	var resp struct {
-		CronJob CronJob `json:"cronJob"`
-	}
-	if err := r.t.do(ctx, "PATCH", "/api/cron/"+url.PathEscape(id), nil, params, &resp, opts...); err != nil {
+	if err := r.t.do(ctx, "PATCH", "/api/cron/"+url.PathEscape(id), nil, params, nil, opts...); err != nil {
 		return nil, err
 	}
-	return &resp.CronJob, nil
+	return r.Get(ctx, id, opts...)
 }
 
 // Delete deletes a cron job.
@@ -154,6 +158,8 @@ type CronExecution struct {
 	Status         CronExecutionStatus `json:"status"`
 	ResponseStatus *int                `json:"responseStatus"`
 	LatencyMs      int                 `json:"latencyMs"`
+	// Error is why a failed execution failed; nil on success.
+	Error *string `json:"error"`
 }
 
 // Trigger manually triggers a cron job and returns the resulting execution.

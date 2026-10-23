@@ -32,12 +32,17 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		plain
 		JSONSchema json.RawMessage `json:"jsonSchema"`
+		// Create answers with json_schema, in snake_case.
+		JSONSchemaSnake json.RawMessage `json:"json_schema"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*s = Schema(decoded.plain)
 	raw := decoded.JSONSchema
+	if len(raw) == 0 {
+		raw = decoded.JSONSchemaSnake
+	}
 	switch {
 	case len(raw) == 0 || string(raw) == "null":
 		s.JSONSchema = ""
@@ -53,8 +58,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 
 // CreateSchemaParams are the parameters for creating a schema.
 type CreateSchemaParams struct {
-	Name        string                 `json:"name"`
-	Slug        *string                `json:"slug,omitempty"`
+	Name string `json:"name"`
+	// Deprecated: not sent. The API always derives the slug from Name and ignored this field.
+	Slug        *string                `json:"-"`
 	Description *string                `json:"description,omitempty"`
 	JSONSchema  map[string]interface{} `json:"jsonSchema"`
 }
@@ -88,8 +94,19 @@ func (p *ListSchemasParams) toQuery() url.Values {
 
 // SchemaValidationResult is the result of validating a payload against a schema.
 type SchemaValidationResult struct {
-	Valid  bool     `json:"valid"`
-	Errors []string `json:"errors"`
+	Valid bool `json:"valid"`
+	// Errors lists what failed. Before v1.13.0 this was a []string, which the API's objects could
+	// not decode into, so every failed validation returned an error instead of a result.
+	Errors []SchemaValidationError `json:"errors"`
+	// Payload echoes the validated payload.
+	Payload json.RawMessage `json:"payload"`
+}
+
+// SchemaValidationError is one validation failure.
+type SchemaValidationError struct {
+	// Path locates the failing value, such as "items[0].sku"; "" is the payload itself.
+	Path    string `json:"path"`
+	Message string `json:"message"`
 }
 
 // SchemasResource provides access to schema-related API endpoints.

@@ -362,11 +362,20 @@ func (r *EventsResource) Debug(ctx context.Context, eventID string, opts ...Requ
 	return &resp, nil
 }
 
-// Export exports events as JSON or CSV.
+// Export exports events. A JSON export returns the decoded document; a CSV export (Format "csv")
+// returns the CSV text as a string. The CSV export used to fail with "failed to unmarshal
+// response", since the body is not JSON.
 func (r *EventsResource) Export(ctx context.Context, params *ExportEventsParams, opts ...RequestOption) (interface{}, error) {
 	var q url.Values
 	if params != nil {
 		q = params.toQuery()
+	}
+	if q.Get("format") == "csv" {
+		var raw []byte
+		if err := r.t.do(ctx, "GET", "/api/events/export", q, nil, &raw, opts...); err != nil {
+			return nil, err
+		}
+		return string(raw), nil
 	}
 	var resp interface{}
 	if err := r.t.do(ctx, "GET", "/api/events/export", q, nil, &resp, opts...); err != nil {
