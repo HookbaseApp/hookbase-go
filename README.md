@@ -61,13 +61,14 @@ client := hookbase.New("your_api_key",
 | `client.Routes` | Routing rules connecting sources to destinations |
 | `client.Events` | Received webhook events |
 | `client.Deliveries` | Delivery attempts and replays |
-| `client.Transforms` | Payload transformations (JSONata, JS) |
+| `client.Transforms` | Payload transformations (JSONata, JavaScript, Liquid, XSLT) |
 | `client.Filters` | Conditional routing filters |
 | `client.Schemas` | JSON Schema validation |
-| `client.APIKeys` | API key management |
+| `client.APIKeys` | API key management (List, Get, Delete; Create and RotateSecret need a dashboard session, not an API key) |
 | `client.Cron` | Scheduled cron jobs |
 | `client.Tunnels` | Local development tunnels |
 | `client.Providers` | Public provider catalog: signing-secret rules, event types |
+| `client.Analytics` | Delivery dashboard (`Dashboard`, `DashboardWithParams`) and all-time `Overview` |
 
 ### Outbound (Send Webhooks)
 
@@ -208,10 +209,14 @@ if err != nil {
 err = wh.Verify(requestBody, headers)
 ```
 
-`NewWebhook` also accepts a `whpk_` key. Rotating an Ed25519 endpoint returns the new public key
-(`RotateSecretResult.PublicKey`, plus `PreviousPublicKey`); during the grace period deliveries are
-signed with both keys, so a verifier holding either one accepts them. For tests, sign headers with
-`hookbase.GenerateEd25519TestHeaders(privateKey, payload, "")`.
+`NewWebhook` also accepts a `whpk_` key, and a `whsk_` secret key (base64 of the 32-byte seed
+followed by the public key; `NewWebhookSecretKey` returns an error instead of panicking). Rotating
+an Ed25519 endpoint returns the new public key (`RotateSecretResult.PublicKey`, plus
+`PreviousPublicKey`); during the grace period deliveries are signed with both keys, so a verifier
+holding either one accepts them. For tests, sign headers with
+`hookbase.GenerateEd25519TestHeaders(privateKey, payload, "")`, or build the verifier from
+`hookbase.EncodeEd25519SecretKey(privateKey)` and call `GenerateTestHeaders`. A verifier built from
+a `whpk_` public key cannot sign, so its `GenerateTestHeaders` panics.
 
 ### Per-Request Options
 
@@ -257,10 +262,24 @@ params := &hookbase.UpdateEndpointParams{
 }
 ```
 
-`Clear` accepts the five endpoint settings the API takes a null for: `EndpointDescription`,
-`EndpointSuccessStatusCodes`, `EndpointBackoffType`, `EndpointRetryDelays` and
-`EndpointIPAllowlistNotes`. Naming anything else, or naming a field you also set on the same struct,
-is an error rather than a silent choice between the two.
+`UpdateEndpointParams.Clear` accepts the six endpoint settings the API takes a null for:
+`EndpointDescription`, `EndpointSuccessStatusCodes`, `EndpointBackoffType`, `EndpointRetryDelays`,
+`EndpointIPAllowlistNotes` and `EndpointAuth`. Naming anything else, or naming a field you also set
+on the same struct, is an error rather than a silent choice between the two. `UpdateSourceParams`,
+`UpdateDestinationParams`, `UpdateRouteParams` and `UpdateSubscriptionParams` have a `Clear` field
+that works the same way, with `Source*`, `Destination*`, `Route*` and `Subscription*` constants.
+
+### Application-scoped methods
+
+The API addresses endpoints, subscriptions, messages and portal tokens by ID alone, so the
+`applicationID` argument of their `Get`, `Update`, `Delete` and similar methods is not sent.
+`Endpoints.Get` (and `GetStats` and `RecoverCircuit`, which call it)
+checks the returned endpoint's application and returns a `*NotFoundError` with code
+`application_mismatch` when it differs; pass `""` to skip the check.
+
+`Endpoints.GetStats` makes two requests: lifetime counters from the endpoint, and `RecentFailures`
+(the last 24 hours) from the endpoint analytics. A key that cannot read analytics gets the counters
+with `RecentFailures` left at 0.
 
 ## Error Handling
 
@@ -298,7 +317,7 @@ if err != nil {
 
 | Outcome | Retried? |
 |---------|----------|
-| 429 rate limit | Yes, any method, after `Retry-After` seconds (60s if the header is missing) |
+| 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid) |
 | 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
 | Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
 | Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
