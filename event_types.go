@@ -25,6 +25,11 @@ type EventType struct {
 	DeprecatedMessage *string                `json:"deprecatedMessage,omitempty"`
 	IsPublic          bool                   `json:"isPublic"`
 	PublishedAt       *string                `json:"publishedAt,omitempty"`
+	// ValidatePayloads rejects sends whose payload does not match Schema (422).
+	ValidatePayloads bool `json:"validatePayloads"`
+	// LatestVersion is the newest version label, or nil when the type has no versions.
+	LatestVersion *string `json:"latestVersion,omitempty"`
+	VersionCount  int     `json:"versionCount"`
 	// SubscriptionCount is returned by List only.
 	SubscriptionCount *int    `json:"subscriptionCount,omitempty"`
 	APIKeyID          *string `json:"apiKeyId,omitempty"`
@@ -61,10 +66,19 @@ type CreateEventTypeParams struct {
 	Description *string                `json:"description,omitempty"`
 	Category    *string                `json:"category,omitempty"`
 	Schema      map[string]interface{} `json:"schema,omitempty"`
+	// ExamplePayload is any JSON value; it is sent as the JSON string the API requires.
+	ExamplePayload   json.RawMessage `json:"examplePayload,omitempty"`
+	DocumentationURL *string         `json:"documentationUrl,omitempty"`
+	// IsEnabled false creates the type disabled (the API defaults to enabled).
+	IsEnabled *bool `json:"isEnabled,omitempty"`
+	// DefaultPriority is 0 (critical) to 4 (bulk); the API defaults to 2.
+	DefaultPriority *int `json:"defaultPriority,omitempty"`
+	// ValidatePayloads rejects sends whose payload does not match Schema.
+	ValidatePayloads *bool `json:"validatePayloads,omitempty"`
 }
 
-// MarshalJSON encodes the params with Schema as the JSON string the API requires; sent as an
-// object, the API rejects the request with 400.
+// MarshalJSON encodes the params with Schema and ExamplePayload as the JSON strings the API
+// requires; sent as objects, the API rejects the request with 400.
 func (p CreateEventTypeParams) MarshalJSON() ([]byte, error) {
 	type wire CreateEventTypeParams
 	schema, err := schemaString(p.Schema)
@@ -73,8 +87,18 @@ func (p CreateEventTypeParams) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		wire
-		Schema *string `json:"schema,omitempty"`
-	}{wire(p), schema})
+		Schema         *string `json:"schema,omitempty"`
+		ExamplePayload *string `json:"examplePayload,omitempty"`
+	}{wire(p), schema, rawString(p.ExamplePayload)})
+}
+
+// rawString returns raw JSON as a string pointer, or nil when it is empty.
+func rawString(raw json.RawMessage) *string {
+	if len(raw) == 0 {
+		return nil
+	}
+	s := string(raw)
+	return &s
 }
 
 // UpdateEventTypeParams are the parameters for updating an event type.
@@ -86,9 +110,20 @@ type UpdateEventTypeParams struct {
 	Category    *string                `json:"category,omitempty"`
 	Schema      map[string]interface{} `json:"schema,omitempty"`
 	IsEnabled   *bool                  `json:"isEnabled,omitempty"`
+	// ExamplePayload is any JSON value, sent as a JSON string.
+	ExamplePayload   json.RawMessage `json:"examplePayload,omitempty"`
+	DocumentationURL *string         `json:"documentationUrl,omitempty"`
+	// IsDeprecated marks the type deprecated; DeprecatedMessage tells subscribers why.
+	IsDeprecated      *bool   `json:"isDeprecated,omitempty"`
+	DeprecatedMessage *string `json:"deprecatedMessage,omitempty"`
+	// IsPublic lists the type in the public event catalog.
+	IsPublic         *bool `json:"isPublic,omitempty"`
+	ValidatePayloads *bool `json:"validatePayloads,omitempty"`
+	DefaultPriority  *int  `json:"defaultPriority,omitempty"`
 }
 
-// MarshalJSON encodes the params with Schema as the JSON string the API requires.
+// MarshalJSON encodes the params with Schema and ExamplePayload as the JSON strings the API
+// requires.
 func (p UpdateEventTypeParams) MarshalJSON() ([]byte, error) {
 	type wire UpdateEventTypeParams
 	schema, err := schemaString(p.Schema)
@@ -97,8 +132,9 @@ func (p UpdateEventTypeParams) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		wire
-		Schema *string `json:"schema,omitempty"`
-	}{wire(p), schema})
+		Schema         *string `json:"schema,omitempty"`
+		ExamplePayload *string `json:"examplePayload,omitempty"`
+	}{wire(p), schema, rawString(p.ExamplePayload)})
 }
 
 // schemaString JSON-encodes a schema object into the string form the event-types API accepts.

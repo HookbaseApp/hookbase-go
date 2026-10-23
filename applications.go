@@ -37,6 +37,10 @@ type Application struct {
 	// SendEventURL is returned by Create and GetOrCreate only; other responses leave it empty.
 	SendEventURL string `json:"sendEventUrl"`
 
+	// Created is set by GetOrCreate: true when the call created the application, false when it
+	// already existed. Always false elsewhere.
+	Created bool `json:"-"`
+
 	// UID is deprecated: the API calls this field externalId and has never sent a key named
 	// "uid", so this was decoded from nothing and every caller reading it got "". Read
 	// ExternalID instead. Kept and mirrored to it so existing field access keeps working.
@@ -67,12 +71,22 @@ type CreateApplicationParams struct {
 	Name     string                 `json:"name"`
 	UID      *string                `json:"externalId,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	// Per-application send rate limits; nil leaves the limit unset.
+	RateLimitPerSecond *int `json:"rateLimitPerSecond,omitempty"`
+	RateLimitPerMinute *int `json:"rateLimitPerMinute,omitempty"`
+	RateLimitPerHour   *int `json:"rateLimitPerHour,omitempty"`
 }
 
 // UpdateApplicationParams are the parameters for updating an application.
 type UpdateApplicationParams struct {
-	Name     *string                `json:"name,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Name               *string                `json:"name,omitempty"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
+	RateLimitPerSecond *int                   `json:"rateLimitPerSecond,omitempty"`
+	RateLimitPerMinute *int                   `json:"rateLimitPerMinute,omitempty"`
+	RateLimitPerHour   *int                   `json:"rateLimitPerHour,omitempty"`
+	// IsDisabled true stops sends to the application; false re-enables it.
+	IsDisabled     *bool   `json:"isDisabled,omitempty"`
+	DisabledReason *string `json:"disabledReason,omitempty"`
 }
 
 // ListApplicationsParams are the parameters for listing applications.
@@ -83,6 +97,10 @@ type ListApplicationsParams struct {
 	Limit  *int    `json:"limit,omitempty"`
 	Cursor *string `json:"cursor,omitempty"`
 	Search *string `json:"search,omitempty"`
+	// IsDisabled filters by disabled state.
+	IsDisabled *bool `json:"isDisabled,omitempty"`
+	// Order is "desc" (newest first, the default) or "asc".
+	Order *string `json:"order,omitempty"`
 
 	// Deprecated: the API pages by cursor and ignores offsets; this is no longer sent. Use
 	// Cursor.
@@ -102,6 +120,12 @@ func (p *ListApplicationsParams) toQuery() url.Values {
 	}
 	if p.Search != nil {
 		q.Set("search", *p.Search)
+	}
+	if p.IsDisabled != nil {
+		q.Set("isDisabled", btoa(*p.IsDisabled))
+	}
+	if p.Order != nil {
+		q.Set("order", *p.Order)
 	}
 	return q
 }
@@ -185,12 +209,24 @@ func (r *ApplicationsResource) Delete(ctx context.Context, id string, opts ...Re
 
 // GetOrCreate gets or creates an application by external ID (UID) using upsert.
 func (r *ApplicationsResource) GetOrCreate(ctx context.Context, uid string, params *CreateApplicationParams, opts ...RequestOption) (*Application, error) {
+	if params == nil {
+		return nil, &Error{Message: "hookbase: Applications.GetOrCreate requires params with a Name"}
+	}
 	body := map[string]interface{}{
 		"name":       params.Name,
 		"externalId": uid,
 	}
 	if params.Metadata != nil {
 		body["metadata"] = params.Metadata
+	}
+	for k, v := range map[string]*int{
+		"rateLimitPerSecond": params.RateLimitPerSecond,
+		"rateLimitPerMinute": params.RateLimitPerMinute,
+		"rateLimitPerHour":   params.RateLimitPerHour,
+	} {
+		if v != nil {
+			body[k] = *v
+		}
 	}
 	var resp struct {
 		Data    Application `json:"data"`
@@ -199,5 +235,6 @@ func (r *ApplicationsResource) GetOrCreate(ctx context.Context, uid string, para
 	if err := r.t.do(ctx, "PUT", "/api/webhook-applications/upsert", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
+	resp.Data.Created = resp.Created
 	return &resp.Data, nil
 }
