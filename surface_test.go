@@ -348,13 +348,31 @@ func TestSurfaceInbound(t *testing.T) {
 		{name: "Schemas.Delete",
 			call:   func(ctx context.Context, c *Client) (interface{}, error) { return nil, c.Schemas.Delete(ctx, "sc_1") },
 			method: "DELETE", path: "/api/schemas/sc_1"},
-		{name: "Schemas.Validate errors", resp: obj("valid", false, "errors", []interface{}{obj("path", "/a", "message", "required")}),
+		{name: "Schemas.Validate errors",
+			resp: obj("valid", false, "payload", obj("b", 1), "errors", []interface{}{
+				obj("path", "root", "message", `Required field "a" is missing`),
+				obj("path", "items[0].sku", "message", `Expected type "string" but got "number"`)}),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
 				return c.Schemas.Validate(ctx, "sc_1", obj("b", 1))
 			}, method: "POST", path: "/api/schemas/sc_1/validate", body: obj("payload", obj("b", 1)),
 			check: func(t *testing.T, got interface{}) {
 				r := got.(*SchemaValidationResult)
-				if r.Valid || len(r.Errors) != 1 || r.Errors[0].Path != "/a" || r.Errors[0].Message != "required" {
+				if r.Valid || len(r.Failures) != 2 || r.Failures[1].Path != "items[0].sku" ||
+					r.Failures[0].Message != `Required field "a" is missing` || string(r.Payload) != `{"b":1}` {
+					t.Errorf("decoded %+v", r)
+				}
+				// Errors keeps its pre-1.13 []string type, now filled from the API's objects.
+				if len(r.Errors) != 2 || r.Errors[0] != `root: Required field "a" is missing` ||
+					r.Errors[1] != `items[0].sku: Expected type "string" but got "number"` {
+					t.Errorf("Errors = %q", r.Errors)
+				}
+			}},
+		{name: "Schemas.Validate ok", resp: obj("valid", true, "errors", []interface{}{}, "payload", obj("a", "x")),
+			call: func(ctx context.Context, c *Client) (interface{}, error) {
+				return c.Schemas.Validate(ctx, "sc_1", obj("a", "x"))
+			}, method: "POST", path: "/api/schemas/sc_1/validate",
+			check: func(t *testing.T, got interface{}) {
+				if r := got.(*SchemaValidationResult); !r.Valid || len(r.Errors) != 0 || len(r.Failures) != 0 {
 					t.Errorf("decoded %+v", r)
 				}
 			}},

@@ -95,18 +95,56 @@ func (p *ListSchemasParams) toQuery() url.Values {
 // SchemaValidationResult is the result of validating a payload against a schema.
 type SchemaValidationResult struct {
 	Valid bool `json:"valid"`
-	// Errors lists what failed. Before v1.13.0 this was a []string, which the API's objects could
-	// not decode into, so every failed validation returned an error instead of a result.
-	Errors []SchemaValidationError `json:"errors"`
+	// Errors lists what failed, one "path: message" line per failure. Failures has the same
+	// list with path and message apart. Before v1.13.0 the API's {path, message} objects could not
+	// decode into this field, so every failed validation returned an error instead of a result.
+	Errors []string `json:"-"`
+	// Failures lists what failed, structured.
+	Failures []SchemaValidationError `json:"-"`
 	// Payload echoes the validated payload.
 	Payload json.RawMessage `json:"payload"`
 }
 
 // SchemaValidationError is one validation failure.
 type SchemaValidationError struct {
-	// Path locates the failing value, such as "items[0].sku"; "" is the payload itself.
+	// Path locates the failing value: "items[0].sku" for a nested array item, "root" for the
+	// payload itself.
 	Path    string `json:"path"`
 	Message string `json:"message"`
+}
+
+// UnmarshalJSON reads the API's {path, message} failures into Failures and formats Errors from
+// them. A plain string in the list (an older shape) is kept as its own line.
+func (r *SchemaValidationResult) UnmarshalJSON(data []byte) error {
+	type plain SchemaValidationResult
+	var w struct {
+		plain
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*r = SchemaValidationResult(w.plain)
+	r.Errors, r.Failures = nil, nil
+	for _, raw := range w.Errors {
+		var f SchemaValidationError
+		if err := json.Unmarshal(raw, &f); err == nil {
+			r.Failures = append(r.Failures, f)
+			if f.Path != "" {
+				r.Errors = append(r.Errors, f.Path+": "+f.Message)
+			} else {
+				r.Errors = append(r.Errors, f.Message)
+			}
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		r.Failures = append(r.Failures, SchemaValidationError{Message: s})
+		r.Errors = append(r.Errors, s)
+	}
+	return nil
 }
 
 // SchemasResource provides access to schema-related API endpoints.
