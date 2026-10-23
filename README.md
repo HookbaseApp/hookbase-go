@@ -43,8 +43,8 @@ func main() {
 ```go
 client := hookbase.New("your_api_key",
     hookbase.WithBaseURL("https://api.hookbase.app"),  // Custom base URL
-    hookbase.WithTimeout(10 * time.Second),            // Request timeout
-    hookbase.WithMaxRetries(3),                        // Retry attempts
+    hookbase.WithTimeout(10 * time.Second),            // http.Client timeout (default 30s; ignored with WithHTTPClient)
+    hookbase.WithMaxRetries(3),                        // Retries after the first attempt (default 3)
     hookbase.WithHTTPClient(customHTTPClient),         // Custom http.Client
     hookbase.WithDebug(true),                          // Debug logging
 )
@@ -216,11 +216,24 @@ signed with both keys, so a verifier holding either one accepts them. For tests,
 ### Per-Request Options
 
 ```go
-source, err := client.Sources.Get(ctx, "src_123",
-    hookbase.WithRequestTimeout(5 * time.Second),
-    hookbase.WithIdempotencyKey("unique-key-123"),
+err := client.Sources.Update(ctx, "src_123", params,
+    hookbase.WithRequestTimeout(5 * time.Second), // bound each attempt to 5s
+    hookbase.WithRequestRetries(0),               // don't retry this call
+)
+
+source, err := client.Sources.Create(ctx, createParams,
+    hookbase.WithIdempotencyKey("unique-key-123"), // lets this POST be retried on 5xx
 )
 ```
+
+- `WithRequestTimeout(d)` bounds **each attempt** (connect, send, read the whole response) to `d`.
+  Each retry gets a fresh `d`, and the backoff between attempts is not counted. Hitting the deadline
+  returns a `*hookbase.TimeoutError` and is not retried. It can shorten but not extend the
+  `http.Client` timeout (`WithTimeout`, or your own client's `Timeout`). To cap the whole call,
+  retries included, put a deadline on `ctx`.
+- `WithRequestRetries(n)` overrides `WithMaxRetries` for one call.
+- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. On a `POST` it also makes the request
+  eligible for retry after a 5xx or network error (see [Retry Behavior](#retry-behavior)).
 
 ### Optional Fields
 
@@ -258,6 +271,7 @@ if err != nil {
     var notFound *hookbase.NotFoundError
     var authErr  *hookbase.AuthenticationError
     var validErr *hookbase.ValidationError
+    var conflict *hookbase.ConflictError
     var rateErr  *hookbase.RateLimitError
 
     switch {
@@ -267,6 +281,8 @@ if err != nil {
         fmt.Println("Check your API key")
     case errors.As(err, &validErr):
         fmt.Printf("Validation: %v\n", validErr.ValidationErrors)
+    case errors.As(err, &conflict):
+        fmt.Println("Conflicts with an existing resource (e.g. duplicate slug)")
     case errors.As(err, &rateErr):
         fmt.Printf("Rate limited, retry after %ds\n", rateErr.RetryAfter)
     default:
@@ -277,13 +293,22 @@ if err != nil {
 
 ## Retry Behavior
 
-- Retries on 5xx errors, network errors and 429 (rate limit) with exponential backoff
+| Outcome | Retried? |
+|---------|----------|
+| 429 rate limit | Yes, any method, after `Retry-After` seconds (60s if the header is missing) |
+| 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
+| Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
+| Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
+| `WithRequestTimeout` deadline hit | No, returns `*TimeoutError` |
+| `ctx` cancelled or past its deadline | No, returns `*TimeoutError` |
+
 - A `POST` is retried after a 5xx or network error only when it carries an idempotency key
   (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
-  a duplicate
-- No retry on 4xx client errors (400, 401, 403, 404)
-- Default: 3 retries with 1s base backoff, 10s max, random jitter
-- Rate limit errors respect the `Retry-After` header
+  a duplicate.
+- Default: 3 retries (4 attempts in total). Backoff is 1s, 2s, 4s, ... capped at 10s, plus up to
+  1s of random jitter.
+- Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
+  `*TimeoutError`.
 
 ## License
 

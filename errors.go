@@ -49,6 +49,12 @@ type NotFoundError struct {
 	APIError
 }
 
+// ConflictError is returned when the request conflicts with the current state of a resource
+// (409), for example a duplicate slug or name. It is never retried.
+type ConflictError struct {
+	APIError
+}
+
 // ValidationError is returned when request validation fails (400/422).
 type ValidationError struct {
 	APIError

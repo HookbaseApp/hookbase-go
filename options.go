@@ -78,7 +78,13 @@ type requestConfig struct {
 	idempotencyKey string
 }
 
-// WithRequestTimeout overrides the timeout for a single request.
+// WithRequestTimeout bounds each attempt of a single request (connecting, sending and reading the
+// whole response) to d. Every retry gets a fresh d; backoff sleeps between attempts are not
+// counted. When the deadline is hit the request fails with a *TimeoutError and is not retried.
+//
+// It is applied through the request context, so it cannot extend past the http.Client's own
+// Timeout (WithTimeout, or the Timeout of a client passed to WithHTTPClient), which still applies.
+// Use a context deadline to bound the request as a whole, retries included.
 func WithRequestTimeout(d time.Duration) RequestOption {
 	return func(c *requestConfig) {
 		c.timeout = d

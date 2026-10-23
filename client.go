@@ -20,7 +20,7 @@ import (
 // sdkVersion is reported in the User-Agent. It must be bumped with the release tag: it sat at
 // 1.5.0 through v1.6.0, v1.7.0 and v1.8.0, so those releases all identified themselves to the
 // API as 1.5.0.
-const sdkVersion = "1.12.0"
+const sdkVersion = "1.13.0"
 
 type transport struct {
 	apiKey     string
@@ -48,7 +48,7 @@ func newTransport(apiKey string, cfg *clientConfig) *transport {
 }
 
 func (t *transport) do(ctx context.Context, method, path string, query url.Values, body interface{}, out interface{}, opts ...RequestOption) error {
-	rc := &requestConfig{timeout: t.timeout}
+	rc := &requestConfig{}
 	for _, opt := range opts {
 		opt(rc)
 	}
@@ -71,7 +71,6 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	}
 
 	// Encode body
-	var bodyReader io.Reader
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -90,103 +89,161 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if bodyBytes != nil {
-			bodyReader = bytes.NewReader(bodyBytes)
+		res := t.attempt(ctx, rc, method, u, body != nil, bodyBytes)
+		if res.err != nil {
+			// The caller's context, or the per-request deadline, ended the attempt.
+			return res.err
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, u, bodyReader)
-		if err != nil {
-			return &NetworkError{Message: "failed to create request", Cause: err}
-		}
-
-		req.Header.Set("Authorization", "Bearer "+t.apiKey)
-		req.Header.Set("User-Agent", "hookbase-go/"+sdkVersion)
-		req.Header.Set("Accept", "application/json")
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		if rc.idempotencyKey != "" {
-			req.Header.Set("Idempotency-Key", rc.idempotencyKey)
-		}
-
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			lastErr = &NetworkError{Message: err.Error(), Cause: err}
-			if ctx.Err() != nil {
-				return &TimeoutError{Message: ctx.Err().Error()}
-			}
+		if res.netErr != nil {
+			lastErr = res.netErr
 			if attempt < maxRetries && retryOnServerError {
-				t.backoff(attempt)
+				if err := sleepCtx(ctx, backoffDelay(attempt)); err != nil {
+					return err
+				}
 				continue
 			}
 			return lastErr
 		}
-
-		defer resp.Body.Close()
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			lastErr = &NetworkError{Message: "failed to read response body", Cause: err}
-			if attempt < maxRetries && retryOnServerError {
-				t.backoff(attempt)
-				continue
-			}
-			return lastErr
-		}
-		resp.Body.Close()
 
 		if t.debug {
-			log.Printf("[hookbase] Response %d: %s", resp.StatusCode, string(respBody))
+			log.Printf("[hookbase] Response %d: %s", res.status, string(res.body))
 		}
 
-		requestID := resp.Header.Get("X-Request-Id")
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			if resp.StatusCode == 204 || out == nil {
+		if res.status >= 200 && res.status < 300 {
+			if res.status == 204 || out == nil {
 				return nil
 			}
 			// A *[]byte receives the raw body, for endpoints that can answer with something
 			// other than JSON (the CSV export).
 			if raw, ok := out.(*[]byte); ok {
-				*raw = respBody
+				*raw = res.body
 				return nil
 			}
-			if err := json.Unmarshal(respBody, out); err != nil {
+			if err := json.Unmarshal(res.body, out); err != nil {
 				return &Error{Message: fmt.Sprintf("failed to unmarshal response: %v", err)}
 			}
 			return nil
 		}
 
-		apiErr := t.mapError(resp.StatusCode, respBody, requestID, resp.Header)
+		apiErr := t.mapError(res.status, res.body, res.header.Get("X-Request-Id"), res.header)
+		lastErr = apiErr
 
-		// Don't retry client errors (except 429)
-		switch apiErr.(type) {
-		case *AuthenticationError, *ForbiddenError, *NotFoundError, *ValidationError:
-			return apiErr
-		case *RateLimitError:
+		switch {
+		case res.status == 429:
+			// The API rejects a rate-limited request before doing any work, so any method may
+			// be resent once Retry-After has passed.
 			if attempt < maxRetries {
 				rle := apiErr.(*RateLimitError)
-				time.Sleep(time.Duration(rle.RetryAfter) * time.Second)
+				if err := sleepCtx(ctx, time.Duration(rle.RetryAfter)*time.Second); err != nil {
+					return err
+				}
 				continue
 			}
 			return apiErr
+		case res.status >= 500:
+			if attempt < maxRetries && retryOnServerError {
+				if err := sleepCtx(ctx, backoffDelay(attempt)); err != nil {
+					return err
+				}
+				continue
+			}
+			return apiErr
+		default:
+			// 4xx other than 429 (400, 401, 403, 404, 409, 422, ...) and anything else
+			// unexpected: resending the same request would get the same answer.
+			return apiErr
 		}
-
-		// Retry 5xx
-		lastErr = apiErr
-		if attempt < maxRetries && retryOnServerError {
-			t.backoff(attempt)
-			continue
-		}
-		return lastErr
 	}
 
 	return lastErr
 }
 
-func (t *transport) backoff(attempt int) {
+// attemptResult is the outcome of a single HTTP attempt. Exactly one of err (terminal: context
+// cancelled or deadline hit), netErr (retryable transport failure) or a status is meaningful.
+type attemptResult struct {
+	status int
+	header http.Header
+	body   []byte
+	netErr error
+	err    error
+}
+
+// attempt sends one HTTP request and reads the whole response body. When a per-request timeout
+// is set it bounds this attempt only (connect, headers and body), so each retry gets a fresh
+// budget.
+func (t *transport) attempt(ctx context.Context, rc *requestConfig, method, u string, hasBody bool, bodyBytes []byte) attemptResult {
+	attemptCtx := ctx
+	if rc.timeout > 0 {
+		var cancel context.CancelFunc
+		attemptCtx, cancel = context.WithTimeout(ctx, rc.timeout)
+		defer cancel()
+	}
+
+	var bodyReader io.Reader
+	if bodyBytes != nil {
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	req, err := http.NewRequestWithContext(attemptCtx, method, u, bodyReader)
+	if err != nil {
+		return attemptResult{err: &NetworkError{Message: "failed to create request", Cause: err}}
+	}
+
+	req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	req.Header.Set("User-Agent", "hookbase-go/"+sdkVersion)
+	req.Header.Set("Accept", "application/json")
+	if hasBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if rc.idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", rc.idempotencyKey)
+	}
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		if attemptCtx.Err() != nil {
+			return attemptResult{err: &TimeoutError{Message: attemptCtx.Err().Error()}}
+		}
+		return attemptResult{netErr: &NetworkError{Message: err.Error(), Cause: err}}
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		if attemptCtx.Err() != nil {
+			return attemptResult{err: &TimeoutError{Message: attemptCtx.Err().Error()}}
+		}
+		return attemptResult{netErr: &NetworkError{Message: "failed to read response body", Cause: err}}
+	}
+
+	return attemptResult{status: resp.StatusCode, header: resp.Header, body: respBody}
+}
+
+// backoffDelay is the exponential backoff before retry number attempt+1: 1s, 2s, 4s, ... capped
+// at 10s, plus up to 1s of random jitter.
+func backoffDelay(attempt int) time.Duration {
 	base := math.Min(float64(1000*int(math.Pow(2, float64(attempt)))), 10000)
 	jitter := rand.Float64() * 1000
-	time.Sleep(time.Duration(base+jitter) * time.Millisecond)
+	return time.Duration(base+jitter) * time.Millisecond
+}
+
+// sleepCtx waits for d, or returns a *TimeoutError as soon as ctx is done.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		if err := ctx.Err(); err != nil {
+			return &TimeoutError{Message: err.Error()}
+		}
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return &TimeoutError{Message: ctx.Err().Error()}
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (t *transport) mapError(status int, body []byte, requestID string, headers http.Header) error {
@@ -237,6 +294,8 @@ func (t *transport) mapError(status int, body []byte, requestID string, headers 
 		return &ForbiddenError{APIError: base}
 	case 404:
 		return &NotFoundError{APIError: base}
+	case 409:
+		return &ConflictError{APIError: base}
 	case 400, 422:
 		return &ValidationError{
 			APIError:         base,
