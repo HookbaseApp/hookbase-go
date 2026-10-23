@@ -30,13 +30,13 @@ var (
 		"applicationId", "url", "description", "headers", "timeoutSeconds",
 		"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 		"ipAllowlistNotes", "useStaticIp", "circuitFailureThreshold",
-		"circuitSuccessThreshold", "circuitCooldownSeconds",
+		"circuitSuccessThreshold", "circuitCooldownSeconds", "signatureScheme",
 	}
 	updateEndpointFields = []string{
 		"url", "description", "isDisabled", "disabledReason", "headers", "timeoutSeconds",
 		"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 		"ipAllowlistNotes", "useStaticIp", "circuitFailureThreshold",
-		"circuitSuccessThreshold", "circuitCooldownSeconds",
+		"circuitSuccessThreshold", "circuitCooldownSeconds", "signatureScheme",
 	}
 	// Keys the API has never accepted on an endpoint. Matched as complete JSON keys, because
 	// "rateLimit" is a prefix of the live "rateLimitPerSecond" — the same trap that let
@@ -49,6 +49,7 @@ var (
 func fullCreateEndpointParams() *CreateEndpointParams {
 	s, b, i := "x", true, 1
 	backoff := BackoffLinear
+	scheme := SignatureSchemeEd25519
 	return &CreateEndpointParams{
 		ApplicationID:           "app_1",
 		URL:                     "https://example.com/hooks",
@@ -64,6 +65,7 @@ func fullCreateEndpointParams() *CreateEndpointParams {
 		CircuitFailureThreshold: &i,
 		CircuitSuccessThreshold: &i,
 		CircuitCooldownSeconds:  &i,
+		SignatureScheme:         &scheme,
 
 		Headers:         map[string]string{"X-Old": "v"},
 		FilterTypes:     []string{"user.created"},
@@ -76,6 +78,7 @@ func fullCreateEndpointParams() *CreateEndpointParams {
 func fullUpdateEndpointParams() *UpdateEndpointParams {
 	s, b, i := "x", true, 1
 	backoff := BackoffFixed
+	scheme := SignatureSchemeHMACSHA256
 	return &UpdateEndpointParams{
 		URL:                     &s,
 		Description:             &s,
@@ -92,6 +95,7 @@ func fullUpdateEndpointParams() *UpdateEndpointParams {
 		CircuitFailureThreshold: &i,
 		CircuitSuccessThreshold: &i,
 		CircuitCooldownSeconds:  &i,
+		SignatureScheme:         &scheme,
 
 		Headers:         map[string]string{"X-Old": "v"},
 		FilterTypes:     []string{"user.created"},

@@ -193,6 +193,26 @@ var event MyEventType
 err = wh.VerifyAndParse(requestBody, headers, &event)
 ```
 
+#### Ed25519 (`v1a`) endpoints
+
+An endpoint created with `SignatureScheme: hookbase.Ptr(hookbase.SignatureSchemeEd25519)` is
+signed with a private key Hookbase keeps, and deliveries carry `v1a,<base64>` signatures. Verify
+them with the endpoint's public key (`Endpoint.PublicKey`, `whpk_...`); `Verify`,
+`VerifyWithTolerance` and `VerifyAndParse` work the same way as for HMAC:
+
+```go
+wh, err := hookbase.NewWebhookPublicKey(*endpoint.PublicKey) // "whpk_..."
+if err != nil {
+    log.Fatal(err)
+}
+err = wh.Verify(requestBody, headers)
+```
+
+`NewWebhook` also accepts a `whpk_` key. Rotating an Ed25519 endpoint returns the new public key
+(`RotateSecretResult.PublicKey`, plus `PreviousPublicKey`); during the grace period deliveries are
+signed with both keys, so a verifier holding either one accepts them. For tests, sign headers with
+`hookbase.GenerateEd25519TestHeaders(privateKey, payload, "")`.
+
 ### Per-Request Options
 
 ```go

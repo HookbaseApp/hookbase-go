@@ -96,6 +96,17 @@ func (s SuccessStatusCode) String() string {
 	return itoa(s.Code)
 }
 
+// SignatureScheme is how Hookbase signs an endpoint's deliveries (Standard Webhooks).
+type SignatureScheme string
+
+const (
+	// SignatureSchemeHMACSHA256 signs with a shared secret: "v1,<base64>" entries. The default.
+	SignatureSchemeHMACSHA256 SignatureScheme = "hmac-sha256"
+	// SignatureSchemeEd25519 signs with a private key Hookbase keeps: "v1a,<base64>" entries,
+	// verified with the endpoint's public key.
+	SignatureSchemeEd25519 SignatureScheme = "ed25519"
+)
+
 // Endpoint represents an outbound webhook endpoint as the API returns it.
 //
 // List and Get mask the signing secret: they set SecretPrefix and HasSecret. Secret carries the
@@ -113,6 +124,13 @@ type Endpoint struct {
 	// HasSecret reports whether a signing secret is set. The secret itself is masked.
 	HasSecret     FlexBool `json:"hasSecret"`
 	SecretVersion int      `json:"secretVersion"`
+	// SignatureScheme is how deliveries are signed: SignatureSchemeHMACSHA256 ("v1" entries,
+	// verified with the secret) or SignatureSchemeEd25519 ("v1a" entries, verified with PublicKey).
+	SignatureScheme SignatureScheme `json:"signatureScheme"`
+	// PublicKey is the Ed25519 public key ("whpk_...") that verifies this endpoint's "v1a"
+	// signatures; pass it to NewWebhookPublicKey. Nil for HMAC endpoints. The private key never
+	// leaves Hookbase.
+	PublicKey *string `json:"publicKey"`
 	// Headers are the custom headers sent with every delivery.
 	Headers []EndpointHeader `json:"headers"`
 	// TimeoutSeconds is the per-delivery request timeout. The API defaults it to 30.
@@ -231,6 +249,10 @@ type CreateEndpointParams struct {
 	CircuitSuccessThreshold *int `json:"circuitSuccessThreshold,omitempty"`
 	// CircuitCooldownSeconds is how long an open circuit waits before retrying, 10 to 3600.
 	CircuitCooldownSeconds *int `json:"circuitCooldownSeconds,omitempty"`
+	// SignatureScheme picks how deliveries are signed. The API defaults to
+	// SignatureSchemeHMACSHA256. With SignatureSchemeEd25519 Hookbase generates the key pair and the
+	// response carries only Endpoint.PublicKey, with no Secret.
+	SignatureScheme *SignatureScheme `json:"signatureScheme,omitempty"`
 
 	// The fields below are tagged json:"-" and never reach the wire under these names. The API's
 	// create schema is becoming strict, so a key it does not accept is a 400 rather than a
@@ -323,6 +345,9 @@ type UpdateEndpointParams struct {
 	CircuitFailureThreshold *int    `json:"circuitFailureThreshold,omitempty"`
 	CircuitSuccessThreshold *int    `json:"circuitSuccessThreshold,omitempty"`
 	CircuitCooldownSeconds  *int    `json:"circuitCooldownSeconds,omitempty"`
+	// SignatureScheme switches the signing scheme. Switching generates a fresh key of the new kind
+	// and ends any rotation grace period, since a receiver cannot verify across schemes.
+	SignatureScheme *SignatureScheme `json:"signatureScheme,omitempty"`
 
 	// Clear names settings to reset to their defaults. Every other field on this struct is a
 	// pointer or a slice, where nil means "leave this alone" -- so nil cannot also mean "set this
@@ -526,21 +551,36 @@ type RotateSecretParams struct {
 }
 
 // RotateSecretResult is the result of rotating an endpoint's signing secret.
+//
+// Rotation keeps the endpoint's scheme. For an HMAC endpoint Secret is the new secret; for an
+// Ed25519 endpoint Secret is empty (the private key never leaves Hookbase) and PublicKey and
+// PreviousPublicKey are set instead.
 type RotateSecretResult struct {
-	// Secret is the new signing secret. It is only ever returned here.
+	// SignatureScheme is the endpoint's scheme, unchanged by the rotation.
+	SignatureScheme SignatureScheme `json:"signatureScheme"`
+	// Secret is the new HMAC signing secret. It is only ever returned here. Empty for Ed25519.
 	Secret string `json:"secret"`
-	// PreviousSecretExpiresAt is when the previous secret stops being valid.
+	// PublicKey is the new Ed25519 public key ("whpk_..."). Empty for HMAC.
+	PublicKey string `json:"publicKey"`
+	// PreviousPublicKey is the Ed25519 public key being rotated out. It still verifies the first
+	// "v1a" entry until PreviousSecretExpiresAt. Nil for HMAC.
+	PreviousPublicKey *string `json:"previousPublicKey"`
+	// PreviousSecretExpiresAt is when the previous secret (or key) stops being used.
 	PreviousSecretExpiresAt string `json:"previousSecretExpiresAt"`
 	SecretVersion           int    `json:"secretVersion"`
 }
 
-// RotateSecret rotates the signing secret for an endpoint and returns the new secret. The
-// previous secret stays valid for the API's default grace period; use RotateSecretWithParams to
-// set it, or to read the expiry and version.
+// RotateSecret rotates the signing key for an endpoint and returns what receivers verify with
+// next: the new secret for an HMAC endpoint, or the new public key ("whpk_...") for an Ed25519
+// one. The previous key stays valid for the API's default grace period; use
+// RotateSecretWithParams to set it, or to read the scheme, expiry and version.
 func (r *EndpointsResource) RotateSecret(ctx context.Context, applicationID, endpointID string, opts ...RequestOption) (string, error) {
 	res, err := r.RotateSecretWithParams(ctx, applicationID, endpointID, nil, opts...)
 	if err != nil {
 		return "", err
+	}
+	if res.SignatureScheme == SignatureSchemeEd25519 {
+		return res.PublicKey, nil
 	}
 	return res.Secret, nil
 }

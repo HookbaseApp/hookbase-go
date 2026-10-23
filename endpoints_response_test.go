@@ -19,7 +19,7 @@ import (
 // so this struct had no field to decode five of them into, and the sixth carried a comment saying so.
 var endpointResponseFields = []string{
 	"id", "applicationId", "url", "description",
-	"secretPrefix", "hasSecret", "secretVersion",
+	"secretPrefix", "hasSecret", "secretVersion", "signatureScheme", "publicKey",
 	"headers", "timeoutSeconds",
 	"isDisabled", "disabledAt", "disabledReason",
 	"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
@@ -43,6 +43,8 @@ func endpointResponseBody() map[string]interface{} {
 		"secretPrefix":            "whsec_abcdef...",
 		"hasSecret":               true,
 		"secretVersion":           2,
+		"signatureScheme":         "ed25519",
+		"publicKey":               "whpk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"headers":                 []interface{}{map[string]interface{}{"name": "X-Tenant", "value": "acme"}},
 		"timeoutSeconds":          45,
 		"isDisabled":              false,
@@ -118,6 +120,80 @@ func TestEndpointDecodesTheDeliveryPolicy(t *testing.T) {
 	}
 	if !bool(ep.UseStaticIP) {
 		t.Error("UseStaticIP = false, want true")
+	}
+	if ep.SignatureScheme != SignatureSchemeEd25519 {
+		t.Errorf("SignatureScheme = %q, want ed25519", ep.SignatureScheme)
+	}
+	if ep.PublicKey == nil || *ep.PublicKey != "whpk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Errorf("PublicKey = %v, want the whpk_ key", ep.PublicKey)
+	}
+}
+
+// rotate-secret answers in two shapes (api/src/routes/webhook-endpoints.ts): HMAC returns the new
+// secret; Ed25519 never returns a private key and sends the new and previous public keys instead.
+func TestRotateSecretDecodesBothSchemes(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       map[string]interface{}
+		wantReturn string
+		check      func(t *testing.T, res *RotateSecretResult)
+	}{
+		{
+			name: "hmac",
+			body: map[string]interface{}{
+				"signatureScheme": "hmac-sha256", "secret": "whsec_new",
+				"previousSecretExpiresAt": "2026-01-01T01:00:00Z", "secretVersion": 3,
+			},
+			wantReturn: "whsec_new",
+			check: func(t *testing.T, res *RotateSecretResult) {
+				if res.SignatureScheme != SignatureSchemeHMACSHA256 || res.Secret != "whsec_new" ||
+					res.PublicKey != "" || res.PreviousPublicKey != nil || res.SecretVersion != 3 {
+					t.Errorf("unexpected HMAC result %+v", res)
+				}
+			},
+		},
+		{
+			name: "ed25519",
+			body: map[string]interface{}{
+				"signatureScheme": "ed25519", "publicKey": "whpk_new", "previousPublicKey": "whpk_old",
+				"previousSecretExpiresAt": "2026-01-01T01:00:00Z", "secretVersion": 4,
+			},
+			wantReturn: "whpk_new",
+			check: func(t *testing.T, res *RotateSecretResult) {
+				if res.SignatureScheme != SignatureSchemeEd25519 || res.Secret != "" ||
+					res.PublicKey != "whpk_new" || res.PreviousPublicKey == nil ||
+					*res.PreviousPublicKey != "whpk_old" || res.SecretVersion != 4 ||
+					res.PreviousSecretExpiresAt != "2026-01-01T01:00:00Z" {
+					t.Errorf("unexpected Ed25519 result %+v", res)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/api/webhook-endpoints/ep_1/rotate-secret") {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			defer server.Close()
+			client := New("test_key", WithBaseURL(server.URL))
+
+			res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "app_1", "ep_1", nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tc.check(t, res)
+
+			got, err := client.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantReturn {
+				t.Errorf("RotateSecret = %q, want %q", got, tc.wantReturn)
+			}
+		})
 	}
 }
 
