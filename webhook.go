@@ -53,6 +53,9 @@ func NewWebhook(secret string) *Webhook {
 		}
 		return wh
 	}
+	if strings.HasPrefix(secret, "whsk_") {
+		panic("hookbase: whsk_ is an Ed25519 private key; verify with the endpoint's whpk_ public key, or sign test headers with GenerateEd25519TestHeaders")
+	}
 	return &Webhook{secret: decodeWebhookSecret(secret)}
 }
 
