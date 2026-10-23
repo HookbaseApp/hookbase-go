@@ -6,7 +6,7 @@ import (
 	"net/url"
 )
 
-// APIKey represents an API key.
+// APIKey represents an API key. The secret itself is never listed; see APIKeyWithSecret.
 type APIKey struct {
 	ID             string   `json:"id"`
 	OrganizationID string   `json:"organizationId"`
@@ -15,15 +15,64 @@ type APIKey struct {
 	Scopes         []string `json:"scopes"`
 	ExpiresAt      *string  `json:"expiresAt"`
 	LastUsedAt     *string  `json:"lastUsedAt"`
-	IsDisabled     bool     `json:"isDisabled"`
-	CreatedAt      string   `json:"createdAt"`
-	UpdatedAt      string   `json:"updatedAt"`
+	// CreatedBy is the ID of the user who created the key.
+	CreatedBy *string `json:"createdBy"`
+	CreatedAt string  `json:"createdAt"`
+
+	// Deprecated: always false. The API has no disabled state for API keys; delete a key to
+	// revoke it.
+	IsDisabled bool `json:"-"`
+	// Deprecated: always empty. The API does not return an update time for API keys.
+	UpdatedAt string `json:"-"`
+}
+
+// UnmarshalJSON accepts scopes either as an array or as the JSON-encoded string the list query
+// returns (the column is text holding '["read","write"]'). Decoding that string into []string
+// failed the whole List response.
+func (k *APIKey) UnmarshalJSON(data []byte) error {
+	type plain APIKey
+	var w struct {
+		plain
+		Scopes json.RawMessage `json:"scopes"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*k = APIKey(w.plain)
+	k.Scopes = nil
+	if len(w.Scopes) == 0 || string(w.Scopes) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(w.Scopes, &k.Scopes); err == nil {
+		return nil
+	}
+	var encoded string
+	if err := json.Unmarshal(w.Scopes, &encoded); err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(encoded), &k.Scopes)
 }
 
 // APIKeyWithSecret includes the full API key (only returned on creation).
 type APIKeyWithSecret struct {
 	APIKey
 	Key string `json:"key"`
+}
+
+// UnmarshalJSON decodes the embedded APIKey and Key together. Without it the embedded type's
+// UnmarshalJSON would be promoted and Key would never be set.
+func (k *APIKeyWithSecret) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &k.APIKey); err != nil {
+		return err
+	}
+	var w struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	k.Key = w.Key
+	return nil
 }
 
 // CreateAPIKeyParams are the parameters for creating an API key.
@@ -65,6 +114,8 @@ func (p CreateAPIKeyParams) MarshalJSON() ([]byte, error) {
 }
 
 // UpdateAPIKeyParams are the parameters for updating an API key.
+//
+// Deprecated: the API has no route to update an API key; see APIKeysResource.Update.
 type UpdateAPIKeyParams struct {
 	Name       *string  `json:"name,omitempty"`
 	Scopes     []string `json:"scopes,omitempty"`
@@ -76,51 +127,84 @@ type APIKeysResource struct {
 	t *transport
 }
 
-// List returns all API keys.
+// List returns all API keys of the organization.
 func (r *APIKeysResource) List(ctx context.Context, opts ...RequestOption) ([]APIKey, error) {
+	// The API answers {"apiKeys": [...]}. This used to read "data", so it always returned an
+	// empty list.
 	var resp struct {
-		Data []APIKey `json:"data"`
+		APIKeys []APIKey `json:"apiKeys"`
+		Data    []APIKey `json:"data"`
 	}
 	if err := r.t.do(ctx, "GET", "/api/api-keys", nil, nil, &resp, opts...); err != nil {
 		return nil, err
 	}
+	if resp.APIKeys != nil {
+		return resp.APIKeys, nil
+	}
 	return resp.Data, nil
 }
 
-// Get returns an API key by ID.
+// Get returns an API key by ID. The API has no route for a single key, so Get lists the keys and
+// picks the one with this ID, returning a *NotFoundError when there is none.
 func (r *APIKeysResource) Get(ctx context.Context, id string, opts ...RequestOption) (*APIKey, error) {
-	var resp struct {
-		Data APIKey `json:"data"`
-	}
-	if err := r.t.do(ctx, "GET", "/api/api-keys/"+url.PathEscape(id), nil, nil, &resp, opts...); err != nil {
+	keys, err := r.List(ctx, opts...)
+	if err != nil {
 		return nil, err
 	}
-	return &resp.Data, nil
+	for i := range keys {
+		if keys[i].ID == id {
+			return &keys[i], nil
+		}
+	}
+	return nil, &NotFoundError{APIError: APIError{Message: "API key not found", Status: 404, Code: "not_found"}}
 }
 
 // Create creates a new API key. The full key is only returned in this response.
+//
+// The API only creates keys for a signed-in user: a request authenticated with an API key gets a
+// *ForbiddenError ("This endpoint requires a user session, not an API key").
 func (r *APIKeysResource) Create(ctx context.Context, params *CreateAPIKeyParams, opts ...RequestOption) (*APIKeyWithSecret, error) {
+	// The API answers {"apiKey": {...}}. Reading "data" dropped the one copy of the raw key.
 	var resp struct {
-		Data APIKeyWithSecret `json:"data"`
+		APIKey *APIKeyWithSecret `json:"apiKey"`
+		Data   *APIKeyWithSecret `json:"data"`
 	}
 	if err := r.t.do(ctx, "POST", "/api/api-keys", nil, params, &resp, opts...); err != nil {
 		return nil, err
 	}
-	return &resp.Data, nil
+	if resp.APIKey != nil {
+		return resp.APIKey, nil
+	}
+	if resp.Data != nil {
+		return resp.Data, nil
+	}
+	return &APIKeyWithSecret{}, nil
 }
 
-// Update updates an API key.
-func (r *APIKeysResource) Update(ctx context.Context, id string, params *UpdateAPIKeyParams, opts ...RequestOption) (*APIKey, error) {
+// RotateSecret replaces an API key's secret, keeping its ID, name, scopes and expiry, and returns
+// the new key (shown only here). The old secret stops working at once. Like Create it needs a
+// user session; with an API key the API returns a *ForbiddenError. It is not retried after a
+// server error, since a second rotation would replace the key the first one returned.
+func (r *APIKeysResource) RotateSecret(ctx context.Context, id string, opts ...RequestOption) (*APIKeyWithSecret, error) {
 	var resp struct {
-		Data APIKey `json:"data"`
+		APIKey APIKeyWithSecret `json:"apiKey"`
 	}
-	if err := r.t.do(ctx, "PATCH", "/api/api-keys/"+url.PathEscape(id), nil, params, &resp, opts...); err != nil {
+	if err := r.t.do(ctx, "POST", "/api/api-keys/"+url.PathEscape(id)+"/rotate-secret", nil, nil, &resp, opts...); err != nil {
 		return nil, err
 	}
-	return &resp.Data, nil
+	return &resp.APIKey, nil
 }
 
-// Delete deletes an API key.
+// Update always fails: the API has no route to update an API key, and every request this made was
+// a 404. It now returns an error without sending anything. Delete the key and create a new one,
+// or use RotateSecret to replace its secret.
+//
+// Deprecated: there is nothing to call. It will be removed in v2.
+func (r *APIKeysResource) Update(ctx context.Context, id string, params *UpdateAPIKeyParams, opts ...RequestOption) (*APIKey, error) {
+	return nil, &Error{Message: "hookbase: the API cannot update an API key; delete it and create a new one, or use RotateSecret"}
+}
+
+// Delete deletes (revokes) an API key. A key cannot delete itself.
 func (r *APIKeysResource) Delete(ctx context.Context, id string, opts ...RequestOption) error {
 	return r.t.do(ctx, "DELETE", "/api/api-keys/"+url.PathEscape(id), nil, nil, nil, opts...)
 }
