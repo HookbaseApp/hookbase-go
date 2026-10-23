@@ -1,6 +1,9 @@
 package hookbase
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Error is the base error type for all Hookbase SDK errors.
 type Error struct {
@@ -16,6 +19,10 @@ func (e *Error) Error() string {
 type ErrorDetails struct {
 	FormErrors  []string            `json:"formErrors"`
 	FieldErrors map[string][]string `json:"fieldErrors"`
+	// Raw is the response's `details` value as sent. Most routes send the object above, but some
+	// send a string (an invalid transform's compile error, for example), which only Raw carries.
+	// Nil when the response had no details.
+	Raw json.RawMessage `json:"-"`
 }
 
 // APIError is returned when the API responds with an error status code.

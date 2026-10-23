@@ -268,26 +268,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func (t *transport) mapError(status int, body []byte, requestID string, headers http.Header) error {
-	var errBody struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-		Code    string `json:"code"`
-		Details struct {
-			FormErrors  []string            `json:"formErrors"`
-			FieldErrors map[string][]string `json:"fieldErrors"`
-		} `json:"details"`
-	}
-	unmarshalErr := json.Unmarshal(body, &errBody)
-
-	msg := ""
-	code := ""
-	if unmarshalErr == nil {
-		msg = errBody.Error
-		if msg == "" {
-			msg = errBody.Message
-		}
-		code = errBody.Code
-	}
+	msg, code, details := parseErrorBody(body)
 	if msg == "" {
 		msg = fmt.Sprintf("API error: %d", status)
 	}
@@ -300,12 +281,7 @@ func (t *transport) mapError(status int, body []byte, requestID string, headers 
 		Status:    status,
 		Code:      code,
 		RequestID: requestID,
-	}
-	if unmarshalErr == nil {
-		base.Details = &ErrorDetails{
-			FormErrors:  errBody.Details.FormErrors,
-			FieldErrors: errBody.Details.FieldErrors,
-		}
+		Details:   details,
 	}
 
 	switch status {
@@ -318,21 +294,98 @@ func (t *transport) mapError(status int, body []byte, requestID string, headers 
 	case 409:
 		return &ConflictError{APIError: base}
 	case 400, 422:
+		var fieldErrors map[string][]string
+		if details != nil {
+			fieldErrors = details.FieldErrors
+		}
 		return &ValidationError{
 			APIError:         base,
-			ValidationErrors: errBody.Details.FieldErrors,
+			ValidationErrors: fieldErrors,
 		}
 	case 429:
-		retryAfter := 60
-		if ra := headers.Get("Retry-After"); ra != "" {
-			if v, err := strconv.Atoi(ra); err == nil {
-				retryAfter = v
-			}
-		}
-		return &RateLimitError{APIError: base, RetryAfter: retryAfter}
+		return &RateLimitError{APIError: base, RetryAfter: parseRetryAfter(headers.Get("Retry-After"), time.Now())}
 	default:
 		return &base
 	}
+}
+
+// parseErrorBody reads the API's error body, `{"error": "<message>", "code": "...", "details": ...}`.
+// Each field is decoded on its own, so one of an unexpected type does not lose the others: some
+// routes send `details` as a plain string (an invalid transform's compile error, a destination's
+// config error), and decoding the body into one struct then failed as a whole and dropped the
+// message and code too. A nested `"error": {"message", "code"}` object is accepted as well.
+// details is nil when the body is not a JSON object.
+func parseErrorBody(body []byte) (msg, code string, details *ErrorDetails) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return "", "", nil
+	}
+	str := func(key string) string {
+		var s string
+		if v, ok := raw[key]; ok && json.Unmarshal(v, &s) == nil {
+			return s
+		}
+		return ""
+	}
+
+	msg = str("error")
+	code = str("code")
+	if v, ok := raw["error"]; ok && msg == "" {
+		var nested struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		}
+		if json.Unmarshal(v, &nested) == nil {
+			msg = nested.Message
+			if code == "" {
+				code = nested.Code
+			}
+		}
+	}
+	if msg == "" {
+		msg = str("message")
+	}
+
+	details = &ErrorDetails{}
+	if v, ok := raw["details"]; ok && string(v) != "null" {
+		details.Raw = v
+		var d struct {
+			FormErrors  []string            `json:"formErrors"`
+			FieldErrors map[string][]string `json:"fieldErrors"`
+		}
+		if json.Unmarshal(v, &d) == nil {
+			details.FormErrors = d.FormErrors
+			details.FieldErrors = d.FieldErrors
+		}
+	}
+	return msg, code, details
+}
+
+// defaultRetryAfter is the wait, in seconds, for a 429 without a usable Retry-After header.
+const defaultRetryAfter = 60
+
+// parseRetryAfter reads a Retry-After header, either delta-seconds or an HTTP-date (RFC 9110
+// 10.2.3), as whole seconds from now. A missing or unparseable header gives defaultRetryAfter; a
+// date in the past gives 0.
+func parseRetryAfter(header string, now time.Time) int {
+	v := strings.TrimSpace(header)
+	if v == "" {
+		return defaultRetryAfter
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	if when, err := http.ParseTime(v); err == nil {
+		secs := int(math.Ceil(when.Sub(now).Seconds()))
+		if secs < 0 {
+			return 0
+		}
+		return secs
+	}
+	return defaultRetryAfter
 }
 
 // buildQuery converts a params struct to url.Values. It handles string, int, bool, and pointer types.
