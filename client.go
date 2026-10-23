@@ -25,7 +25,6 @@ const sdkVersion = "1.13.0"
 type transport struct {
 	apiKey     string
 	baseURL    string
-	timeout    time.Duration
 	maxRetries int
 	httpClient *http.Client
 	debug      bool
@@ -40,7 +39,6 @@ func newTransport(apiKey string, cfg *clientConfig) *transport {
 	return &transport{
 		apiKey:     apiKey,
 		baseURL:    cfg.baseURL,
-		timeout:    cfg.timeout,
 		maxRetries: cfg.maxRetries,
 		httpClient: httpClient,
 		debug:      cfg.debug,
@@ -56,6 +54,10 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	maxRetries := t.maxRetries
 	if rc.maxRetries != nil {
 		maxRetries = *rc.maxRetries
+	}
+	// A negative count would skip the loop and return nil without sending anything.
+	if maxRetries < 0 {
+		maxRetries = 0
 	}
 
 	// A POST is not idempotent unless it carries an idempotency key: if a 5xx or a dropped
@@ -91,7 +93,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		res := t.attempt(ctx, rc, method, u, body != nil, bodyBytes)
 		if res.err != nil {
-			// The caller's context, or the per-request deadline, ended the attempt.
+			// The caller's context ended the attempt, or the request could not be built.
 			return res.err
 		}
 
@@ -159,8 +161,11 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	return lastErr
 }
 
-// attemptResult is the outcome of a single HTTP attempt. Exactly one of err (terminal: context
-// cancelled or deadline hit), netErr (retryable transport failure) or a status is meaningful.
+// attemptResult is the outcome of a single HTTP attempt. Exactly one of these is meaningful:
+//   - err: terminal, not retried (the caller's ctx is done, or the request could not be built);
+//   - netErr: a transport failure, retried when the request is retry-safe. It is a *NetworkError,
+//     or a *TimeoutError when the per-request (WithRequestTimeout) deadline ended this attempt;
+//   - status, header and body: the server answered.
 type attemptResult struct {
 	status int
 	header http.Header
@@ -171,7 +176,7 @@ type attemptResult struct {
 
 // attempt sends one HTTP request and reads the whole response body. When a per-request timeout
 // is set it bounds this attempt only (connect, headers and body), so each retry gets a fresh
-// budget.
+// budget, and hitting it is retryable like a network error.
 func (t *transport) attempt(ctx context.Context, rc *requestConfig, method, u string, hasBody bool, bodyBytes []byte) attemptResult {
 	attemptCtx := ctx
 	if rc.timeout > 0 {
@@ -202,8 +207,8 @@ func (t *transport) attempt(ctx context.Context, rc *requestConfig, method, u st
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		if attemptCtx.Err() != nil {
-			return attemptResult{err: &TimeoutError{Message: attemptCtx.Err().Error()}}
+		if r, done := ctxResult(ctx, attemptCtx); done {
+			return r
 		}
 		return attemptResult{netErr: &NetworkError{Message: err.Error(), Cause: err}}
 	}
@@ -211,13 +216,29 @@ func (t *transport) attempt(ctx context.Context, rc *requestConfig, method, u st
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		if attemptCtx.Err() != nil {
-			return attemptResult{err: &TimeoutError{Message: attemptCtx.Err().Error()}}
+		if r, done := ctxResult(ctx, attemptCtx); done {
+			return r
 		}
 		return attemptResult{netErr: &NetworkError{Message: "failed to read response body", Cause: err}}
 	}
 
 	return attemptResult{status: resp.StatusCode, header: resp.Header, body: respBody}
+}
+
+// ctxResult classifies a failed attempt whose context may have ended it. The caller's ctx being
+// done is terminal; only the per-attempt deadline having passed is retryable.
+func ctxResult(ctx, attemptCtx context.Context) (attemptResult, bool) {
+	if err := ctx.Err(); err != nil {
+		return attemptResult{err: newTimeoutError(err)}, true
+	}
+	if err := attemptCtx.Err(); err != nil {
+		return attemptResult{netErr: newTimeoutError(err)}, true
+	}
+	return attemptResult{}, false
+}
+
+func newTimeoutError(err error) *TimeoutError {
+	return &TimeoutError{Message: err.Error(), Err: err}
 }
 
 // backoffDelay is the exponential backoff before retry number attempt+1: 1s, 2s, 4s, ... capped
@@ -232,7 +253,7 @@ func backoffDelay(attempt int) time.Duration {
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		if err := ctx.Err(); err != nil {
-			return &TimeoutError{Message: err.Error()}
+			return newTimeoutError(err)
 		}
 		return nil
 	}
@@ -240,7 +261,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return &TimeoutError{Message: ctx.Err().Error()}
+		return newTimeoutError(ctx.Err())
 	case <-timer.C:
 		return nil
 	}

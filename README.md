@@ -227,8 +227,9 @@ source, err := client.Sources.Create(ctx, createParams,
 ```
 
 - `WithRequestTimeout(d)` bounds **each attempt** (connect, send, read the whole response) to `d`.
-  Each retry gets a fresh `d`, and the backoff between attempts is not counted. Hitting the deadline
-  returns a `*hookbase.TimeoutError` and is not retried. It can shorten but not extend the
+  Each retry gets a fresh `d`, and the backoff between attempts is not counted. An attempt that hits
+  the deadline is retried like a network error (so not for a `POST` without an idempotency key);
+  once retries run out the call returns a `*hookbase.TimeoutError`. It can shorten but not extend the
   `http.Client` timeout (`WithTimeout`, or your own client's `Timeout`). To cap the whole call,
   retries included, put a deadline on `ctx`.
 - `WithRequestRetries(n)` overrides `WithMaxRetries` for one call.
@@ -263,7 +264,9 @@ is an error rather than a silent choice between the two.
 
 ## Error Handling
 
-All API errors are typed for easy handling with `errors.As`:
+All API errors are typed for easy handling with `errors.As`. Every typed API error also unwraps to
+`*hookbase.APIError`, so `errors.As(err, &apiErr)` gives you `Status`, `Code` and `RequestID` for
+any of them:
 
 ```go
 _, err := client.Sources.Get(ctx, "nonexistent")
@@ -299,14 +302,14 @@ if err != nil {
 | 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
 | Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
 | Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
-| `WithRequestTimeout` deadline hit | No, returns `*TimeoutError` |
-| `ctx` cancelled or past its deadline | No, returns `*TimeoutError` |
+| `WithRequestTimeout` deadline hit on one attempt | Same as 5xx; `*TimeoutError` once retries run out |
+| `ctx` cancelled or past its deadline | No, returns `*TimeoutError` (`errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` work) |
 
 - A `POST` is retried after a 5xx or network error only when it carries an idempotency key
   (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
   a duplicate.
-- Default: 3 retries (4 attempts in total). Backoff is 1s, 2s, 4s, ... capped at 10s, plus up to
-  1s of random jitter.
+- Default: 3 retries (4 attempts in total); a negative count is treated as 0. Backoff is 1s, 2s,
+  4s, ... capped at 10s, plus up to 1s of random jitter.
 - Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
   `*TimeoutError`.
 

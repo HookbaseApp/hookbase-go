@@ -48,7 +48,8 @@ func WithTimeout(d time.Duration) ClientOption {
 	}
 }
 
-// WithMaxRetries sets the maximum number of retry attempts for failed requests.
+// WithMaxRetries sets the maximum number of retry attempts for failed requests. Negative values
+// are treated as 0: the request is still sent once.
 func WithMaxRetries(n int) ClientOption {
 	return func(c *clientConfig) {
 		c.maxRetries = n
@@ -80,7 +81,9 @@ type requestConfig struct {
 
 // WithRequestTimeout bounds each attempt of a single request (connecting, sending and reading the
 // whole response) to d. Every retry gets a fresh d; backoff sleeps between attempts are not
-// counted. When the deadline is hit the request fails with a *TimeoutError and is not retried.
+// counted. An attempt that hits the deadline is retried like a network error when the request
+// is retry-safe (not a POST, or a POST with an idempotency key); once retries run out, or for a
+// POST without a key, the request fails with a *TimeoutError.
 //
 // It is applied through the request context, so it cannot extend past the http.Client's own
 // Timeout (WithTimeout, or the Timeout of a client passed to WithHTTPClient), which still applies.
@@ -91,7 +94,8 @@ func WithRequestTimeout(d time.Duration) RequestOption {
 	}
 }
 
-// WithRequestRetries overrides the retry count for a single request.
+// WithRequestRetries overrides the retry count for a single request. Negative values are treated
+// as 0.
 func WithRequestRetries(n int) RequestOption {
 	return func(c *requestConfig) {
 		c.maxRetries = &n

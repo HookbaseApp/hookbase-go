@@ -39,15 +39,24 @@ type AuthenticationError struct {
 	APIError
 }
 
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *AuthenticationError) Unwrap() error { return &e.APIError }
+
 // ForbiddenError is returned when access is denied (403).
 type ForbiddenError struct {
 	APIError
 }
 
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *ForbiddenError) Unwrap() error { return &e.APIError }
+
 // NotFoundError is returned when a resource is not found (404).
 type NotFoundError struct {
 	APIError
 }
+
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *NotFoundError) Unwrap() error { return &e.APIError }
 
 // ConflictError is returned when the request conflicts with the current state of a resource
 // (409), for example a duplicate slug or name. It is never retried.
@@ -55,11 +64,17 @@ type ConflictError struct {
 	APIError
 }
 
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *ConflictError) Unwrap() error { return &e.APIError }
+
 // ValidationError is returned when request validation fails (400/422).
 type ValidationError struct {
 	APIError
 	ValidationErrors map[string][]string
 }
+
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *ValidationError) Unwrap() error { return &e.APIError }
 
 func (e *ValidationError) Error() string {
 	base := e.APIError.Error()
@@ -75,10 +90,19 @@ type RateLimitError struct {
 	RetryAfter int // seconds
 }
 
-// TimeoutError is returned when a request times out.
+// Unwrap returns the embedded *APIError, so errors.As(err, &apiErr) matches it.
+func (e *RateLimitError) Unwrap() error { return &e.APIError }
+
+// TimeoutError is returned when a request times out or its context is cancelled. Err is the
+// underlying context error (context.DeadlineExceeded or context.Canceled), so
+// errors.Is(err, context.Canceled) works.
 type TimeoutError struct {
 	Message string
+	Err     error
 }
+
+// Unwrap returns the underlying context error.
+func (e *TimeoutError) Unwrap() error { return e.Err }
 
 func (e *TimeoutError) Error() string {
 	return fmt.Sprintf("hookbase: request timed out: %s", e.Message)
