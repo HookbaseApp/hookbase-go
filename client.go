@@ -135,8 +135,9 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 		case res.status == 429:
 			// The API rejects a rate-limited request before doing any work, so any method may
 			// be resent once Retry-After has passed.
-			if attempt < maxRetries {
-				rle := apiErr.(*RateLimitError)
+			// A wait longer than maxRetryAfterWait (a quota window, or a far-off HTTP-date) is
+			// returned to the caller rather than slept through.
+			if rle := apiErr.(*RateLimitError); attempt < maxRetries && rle.RetryAfter <= maxRetryAfterWait {
 				if err := sleepCtx(ctx, time.Duration(rle.RetryAfter)*time.Second); err != nil {
 					return err
 				}
@@ -363,6 +364,10 @@ func parseErrorBody(body []byte) (msg, code string, details *ErrorDetails) {
 
 // defaultRetryAfter is the wait, in seconds, for a 429 without a usable Retry-After header.
 const defaultRetryAfter = 60
+
+// maxRetryAfterWait is the longest Retry-After, in seconds, the client sleeps through before
+// retrying a 429. A longer wait returns the *RateLimitError at once, with RetryAfter set.
+const maxRetryAfterWait = 60
 
 // parseRetryAfter reads a Retry-After header, either delta-seconds or an HTTP-date (RFC 9110
 // 10.2.3), as whole seconds from now. A missing or unparseable header gives defaultRetryAfter; a

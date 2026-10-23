@@ -641,9 +641,12 @@ func (r *EndpointsResource) Create(ctx context.Context, applicationID string, pa
 	return &resp.Data, nil
 }
 
-// Update updates an endpoint. The API addresses endpoints by ID alone, so applicationID is not
-// sent; it is accepted for symmetry with Create and List.
+// Update updates an endpoint. When applicationID is not empty, Update first checks that the
+// endpoint belongs to that application (see Get), so a mismatch changes nothing.
 func (r *EndpointsResource) Update(ctx context.Context, applicationID, endpointID string, params *UpdateEndpointParams, opts ...RequestOption) (*Endpoint, error) {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return nil, err
+	}
 	var resp struct {
 		Data Endpoint `json:"data"`
 	}
@@ -653,8 +656,12 @@ func (r *EndpointsResource) Update(ctx context.Context, applicationID, endpointI
 	return &resp.Data, nil
 }
 
-// Delete deletes an endpoint. applicationID is not sent: the API addresses endpoints by ID alone.
+// Delete deletes an endpoint. When applicationID is not empty, Delete first checks that the
+// endpoint belongs to that application (see Get).
 func (r *EndpointsResource) Delete(ctx context.Context, applicationID, endpointID string, opts ...RequestOption) error {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return err
+	}
 	return r.t.do(ctx, "DELETE", "/api/webhook-endpoints/"+url.PathEscape(endpointID), nil, nil, nil, opts...)
 }
 
@@ -706,6 +713,9 @@ func (r *EndpointsResource) RotateSecret(ctx context.Context, applicationID, end
 // replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
 // retries, and the API does not deduplicate rotations.
 func (r *EndpointsResource) RotateSecretWithParams(ctx context.Context, applicationID, endpointID string, params *RotateSecretParams, opts ...RequestOption) (*RotateSecretResult, error) {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return nil, err
+	}
 	var body interface{}
 	if params != nil {
 		body = params
@@ -772,15 +782,21 @@ func (r *EndpointsResource) GetStats(ctx context.Context, applicationID, endpoin
 
 // RecoverCircuit resets the circuit breaker for an endpoint.
 func (r *EndpointsResource) RecoverCircuit(ctx context.Context, applicationID, endpointID string, opts ...RequestOption) (*Endpoint, error) {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return nil, err
+	}
 	if err := r.t.do(ctx, "POST", "/api/webhook-endpoints/"+url.PathEscape(endpointID)+"/reset-circuit", nil, nil, nil, opts...); err != nil {
 		return nil, err
 	}
-	return r.Get(ctx, applicationID, endpointID, opts...)
+	return r.Get(ctx, "", endpointID, opts...)
 }
 
 // Test sends a test event to an endpoint and returns the decoded JSON response. TestWithParams
 // sets the event type and payload and returns a typed result.
 func (r *EndpointsResource) Test(ctx context.Context, applicationID, endpointID string, opts ...RequestOption) (interface{}, error) {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return nil, err
+	}
 	var resp interface{}
 	if err := r.t.do(ctx, "POST", "/api/webhook-endpoints/"+url.PathEscape(endpointID)+"/test", nil, nil, &resp, opts...); err != nil {
 		return nil, err
@@ -825,6 +841,9 @@ type EndpointTestResult struct {
 // returns the delivery outcome. Like every POST without an idempotency key it is not retried after
 // a server error, so the test is not delivered twice.
 func (r *EndpointsResource) TestWithParams(ctx context.Context, applicationID, endpointID string, params *TestEndpointParams, opts ...RequestOption) (*EndpointTestResult, error) {
+	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
+		return nil, err
+	}
 	if params == nil {
 		params = &TestEndpointParams{}
 	}
@@ -833,6 +852,16 @@ func (r *EndpointsResource) TestWithParams(ctx context.Context, applicationID, e
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// ensureApplication checks, before a by-ID call with side effects, that the endpoint belongs to
+// applicationID. It costs one GET, and none when applicationID is empty.
+func (r *EndpointsResource) ensureApplication(ctx context.Context, applicationID, endpointID string, opts []RequestOption) error {
+	if applicationID == "" {
+		return nil
+	}
+	_, err := r.Get(ctx, applicationID, endpointID, opts...)
+	return err
 }
 
 // checkApplication returns a *NotFoundError when want is set and the resource's application got

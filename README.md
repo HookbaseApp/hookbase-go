@@ -273,9 +273,11 @@ that works the same way, with `Source*`, `Destination*`, `Route*` and `Subscript
 
 The API addresses endpoints, subscriptions, messages and portal tokens by ID alone, so the
 `applicationID` argument of their `Get`, `Update`, `Delete` and similar methods is not sent.
-`Endpoints.Get` (and `GetStats` and `RecoverCircuit`, which call it)
-checks the returned endpoint's application and returns a `*NotFoundError` with code
-`application_mismatch` when it differs; pass `""` to skip the check.
+The endpoint methods check it on the client instead. `Endpoints.Get` and `GetStats` check the
+returned endpoint's application. `Update`, `Delete`, `Enable`, `Disable`, `RotateSecret`, `Test` and
+`RecoverCircuit` first read the endpoint (one extra GET) and change nothing if it belongs to another
+application. A mismatch returns a `*NotFoundError` with code `application_mismatch`. Pass `""` to
+skip the check and the extra request.
 
 `Endpoints.GetStats` makes two requests: lifetime counters from the endpoint, and `RecentFailures`
 (the last 24 hours) from the endpoint analytics. A key that cannot read analytics gets the counters
@@ -317,7 +319,7 @@ if err != nil {
 
 | Outcome | Retried? |
 |---------|----------|
-| 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid) |
+| 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid). A `Retry-After` over 60s is returned as a `*RateLimitError` at once instead of being waited out |
 | 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
 | Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
 | Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |

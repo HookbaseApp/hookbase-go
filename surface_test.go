@@ -607,11 +607,11 @@ func TestSurfaceOutbound(t *testing.T) {
 			}, method: "POST", path: "/api/webhook-endpoints", body: obj("applicationId", "app_1", "endpointType", "polling", "url", nil)},
 		{name: "Endpoints.Update", resp: obj("data", obj("id", "ep_1")),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return c.Endpoints.Update(ctx, "app_1", "ep_1", &UpdateEndpointParams{Clear: []EndpointField{EndpointAuth}})
+				return c.Endpoints.Update(ctx, "", "ep_1", &UpdateEndpointParams{Clear: []EndpointField{EndpointAuth}})
 			}, method: "PATCH", path: "/api/webhook-endpoints/ep_1", body: obj("authentication", nil)},
 		{name: "Endpoints.Delete",
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return nil, c.Endpoints.Delete(ctx, "app_1", "ep_1")
+				return nil, c.Endpoints.Delete(ctx, "", "ep_1")
 			},
 			method: "DELETE", path: "/api/webhook-endpoints/ep_1"},
 		{name: "Endpoints.TestWithParams",
@@ -620,7 +620,7 @@ func TestSurfaceOutbound(t *testing.T) {
 				"delivery", obj("status", "failed", "responseStatus", 500, "responseTimeMs", 42, "responseBody", "boom", "errorMessage", nil),
 				"signature", obj("header", "webhook-signature", "value", "v1,abc", "timestamp", 1761177600)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return c.Endpoints.TestWithParams(ctx, "app_1", "ep_1", &TestEndpointParams{EventType: Ptr("order.created"), Payload: obj("a", 1)})
+				return c.Endpoints.TestWithParams(ctx, "", "ep_1", &TestEndpointParams{EventType: Ptr("order.created"), Payload: obj("a", 1)})
 			}, method: "POST", path: "/api/webhook-endpoints/ep_1/test", body: obj("eventType", "order.created", "payload", obj("a", 1)),
 			check: func(t *testing.T, got interface{}) {
 				r := got.(*EndpointTestResult)
@@ -633,17 +633,17 @@ func TestSurfaceOutbound(t *testing.T) {
 
 		{name: "Endpoints.Enable", resp: obj("data", obj("id", "ep_1", "isDisabled", false)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return c.Endpoints.Enable(ctx, "app_1", "ep_1")
+				return c.Endpoints.Enable(ctx, "", "ep_1")
 			},
 			method: "PATCH", path: "/api/webhook-endpoints/ep_1", body: obj("isDisabled", false)},
 		{name: "Endpoints.Disable", resp: obj("data", obj("id", "ep_1", "isDisabled", true)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return c.Endpoints.Disable(ctx, "app_1", "ep_1")
+				return c.Endpoints.Disable(ctx, "", "ep_1")
 			},
 			method: "PATCH", path: "/api/webhook-endpoints/ep_1", body: obj("isDisabled", true)},
 		{name: "Endpoints.Test", resp: obj("data", obj("success", true)),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
-				return c.Endpoints.Test(ctx, "app_1", "ep_1")
+				return c.Endpoints.Test(ctx, "", "ep_1")
 			},
 			method: "POST", path: "/api/webhook-endpoints/ep_1/test"},
 

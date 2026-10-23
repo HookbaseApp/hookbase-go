@@ -42,8 +42,8 @@ type CreateCronParams struct {
 	Payload     *string           `json:"payload,omitempty"`
 	TimeoutMs   *int              `json:"timeoutMs,omitempty"`
 	Timezone    *string           `json:"timezone,omitempty"`
-	// IsActive false creates the job paused. The create route does not read it (every job starts
-	// active), so Create applies it with a follow-up Update.
+	// Deprecated: the create route ignores it and every job starts active. To pause a new job,
+	// call Update with IsActive false after Create. It is not sent.
 	IsActive        *bool   `json:"-"`
 	UseStaticIP     *bool   `json:"useStaticIp,omitempty"`
 	NotifyOnFailure *bool   `json:"notifyOnFailure,omitempty"`
@@ -122,9 +122,6 @@ func (r *CronResource) Create(ctx context.Context, params *CreateCronParams, opt
 	}
 	if err := r.t.do(ctx, "POST", "/api/cron", nil, params, &resp, opts...); err != nil {
 		return nil, err
-	}
-	if params != nil && params.IsActive != nil && !*params.IsActive && resp.CronJob.ID != "" {
-		return r.Update(ctx, resp.CronJob.ID, &UpdateCronParams{IsActive: Ptr(false)}, opts...)
 	}
 	return &resp.CronJob, nil
 }

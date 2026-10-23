@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func endpointBody(app string) map[string]interface{} {
@@ -72,15 +73,57 @@ func TestEndpointGetChecksApplication(t *testing.T) {
 }
 
 func TestEndpointRecoverCircuitReadsBack(t *testing.T) {
-	srv := newRecordingServer(t, cannedResponse{body: obj("success", true)}, cannedResponse{body: endpointBody("app_1")})
+	srv := newRecordingServer(t, cannedResponse{body: endpointBody("app_1")}, cannedResponse{body: obj("success", true)}, cannedResponse{body: endpointBody("app_1")})
 	c := New("k", WithBaseURL(srv.URL))
 	ep, err := c.Endpoints.RecoverCircuit(context.Background(), "app_1", "ep_1")
 	if err != nil || ep.ID != "ep_1" {
 		t.Fatalf("ep=%+v err=%v", ep, err)
 	}
 	reqs := srv.all()
-	if reqs[0].Method != "POST" || reqs[0].Path != "/api/webhook-endpoints/ep_1/reset-circuit" || reqs[1].Method != "GET" {
+	if len(reqs) != 3 || reqs[0].Method != "GET" || reqs[1].Method != "POST" || reqs[1].Path != "/api/webhook-endpoints/ep_1/reset-circuit" || reqs[2].Method != "GET" {
 		t.Errorf("requests = %+v", reqs)
+	}
+}
+
+// A by-ID call with side effects checks the application first, so a mismatch sends nothing else.
+func TestEndpointMutationsCheckApplicationFirst(t *testing.T) {
+	calls := map[string]func(c *Client) error{
+		"Update": func(c *Client) error {
+			_, err := c.Endpoints.Update(context.Background(), "app_1", "ep_1", &UpdateEndpointParams{Description: Ptr("x")})
+			return err
+		},
+		"Delete": func(c *Client) error { return c.Endpoints.Delete(context.Background(), "app_1", "ep_1") },
+		"Enable": func(c *Client) error { _, err := c.Endpoints.Enable(context.Background(), "app_1", "ep_1"); return err },
+		"Disable": func(c *Client) error {
+			_, err := c.Endpoints.Disable(context.Background(), "app_1", "ep_1")
+			return err
+		},
+		"RotateSecret": func(c *Client) error {
+			_, err := c.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+			return err
+		},
+		"Test": func(c *Client) error { _, err := c.Endpoints.Test(context.Background(), "app_1", "ep_1"); return err },
+		"TestWithParams": func(c *Client) error {
+			_, err := c.Endpoints.TestWithParams(context.Background(), "app_1", "ep_1", nil)
+			return err
+		},
+		"RecoverCircuit": func(c *Client) error {
+			_, err := c.Endpoints.RecoverCircuit(context.Background(), "app_1", "ep_1")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			srv := newRecordingServer(t, cannedResponse{body: endpointBody("app_other")})
+			err := call(New("k", WithBaseURL(srv.URL)))
+			var nf *NotFoundError
+			if !errors.As(err, &nf) || nf.Code != "application_mismatch" {
+				t.Fatalf("err = %v, want application_mismatch", err)
+			}
+			if reqs := srv.all(); len(reqs) != 1 || reqs[0].Method != "GET" {
+				t.Errorf("requests = %+v, want only the GET", reqs)
+			}
+		})
 	}
 }
 
@@ -101,38 +144,24 @@ func TestCronUpdateReadsJobBack(t *testing.T) {
 	}
 }
 
-func TestCronCreatePausedAppliesIsActive(t *testing.T) {
-	srv := newRecordingServer(t,
-		cannedResponse{body: obj("cronJob", obj("id", "cr_1", "isActive", true))},
-		cannedResponse{body: obj("success", true)},
-		cannedResponse{body: obj("cronJob", obj("id", "cr_1", "isActive", false))})
+func TestCronCreateIgnoresIsActive(t *testing.T) {
+	// The create route ignores isActive, and Create makes no follow-up Update: a second request
+	// could fail after the job exists and lose its ID.
+	srv := newRecordingServer(t, cannedResponse{body: obj("cronJob", obj("id", "cr_1", "isActive", true))})
 	c := New("k", WithBaseURL(srv.URL))
 	job, err := c.Cron.Create(context.Background(), &CreateCronParams{Name: "n", Schedule: "* * * * *", URL: "https://e", IsActive: Ptr(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bool(job.IsActive) {
-		t.Error("job still active")
+	if job.ID != "cr_1" {
+		t.Errorf("job = %+v", job)
 	}
 	reqs := srv.all()
-	if len(reqs) != 3 {
-		t.Fatalf("got %d requests", len(reqs))
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requests, want 1", len(reqs))
 	}
 	if strings.Contains(string(reqs[0].Body), "isActive") {
 		t.Errorf("create body sent isActive, which the route ignores: %s", reqs[0].Body)
-	}
-	if b := decodeBody(t, reqs[1]); b["isActive"] != false {
-		t.Errorf("update body = %s", reqs[1].Body)
-	}
-
-	// Active (or unset) is a single request.
-	srv2 := newRecordingServer(t, cannedResponse{body: obj("cronJob", obj("id", "cr_2"))})
-	c2 := New("k", WithBaseURL(srv2.URL))
-	if _, err := c2.Cron.Create(context.Background(), &CreateCronParams{Name: "n", IsActive: Ptr(true)}); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(srv2.all()); n != 1 {
-		t.Errorf("active create made %d requests", n)
 	}
 }
 
@@ -207,5 +236,22 @@ func TestSubscriptionListFlatJoins(t *testing.T) {
 	}
 	if s.ApplicationID != "app_1" || s.EndpointURL != "https://e" || s.EventTypeName != "a.b" {
 		t.Errorf("decoded %+v", s)
+	}
+}
+
+func TestRateLimitLongRetryAfterNotSlept(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{status: 429, headers: map[string]string{"Retry-After": "3600"}, body: obj("error", "monthly limit")})
+	c := New("k", WithBaseURL(srv.URL))
+	start := time.Now()
+	_, err := c.Applications.Get(context.Background(), "app_1")
+	var rle *RateLimitError
+	if !errors.As(err, &rle) || rle.RetryAfter != 3600 {
+		t.Fatalf("err = %v, want RateLimitError with RetryAfter 3600", err)
+	}
+	if n := len(srv.all()); n != 1 {
+		t.Errorf("made %d requests, want 1", n)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("slept %v", time.Since(start))
 	}
 }

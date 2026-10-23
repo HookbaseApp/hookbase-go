@@ -180,13 +180,13 @@ func TestRotateSecretDecodesBothSchemes(t *testing.T) {
 			defer server.Close()
 			client := New("test_key", WithBaseURL(server.URL))
 
-			res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "app_1", "ep_1", nil)
+			res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "", "ep_1", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			tc.check(t, res)
 
-			got, err := client.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+			got, err := client.Endpoints.RotateSecret(context.Background(), "", "ep_1")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
