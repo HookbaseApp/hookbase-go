@@ -174,8 +174,8 @@ type CreateDestinationParams struct {
 	// than a server-side default. A slug set here is sent exactly as given, including one the API
 	// will reject: this fills a gap, it does not launder a value.
 	Slug *string `json:"slug,omitempty"`
-	// Type defaults to http server-side. The API also accepts the queue and warehouse types; pass
-	// DestinationType("sqs") and friends for the ones this SDK has no constant for yet.
+	// Type defaults to http server-side. The API also accepts the queue, event-bus and storage
+	// types (DestinationSQS, DestinationS3 and so on).
 	Type *DestinationType `json:"type,omitempty"`
 	// URL is required for http destinations and must not resolve to a private or internal address.
 	// Warehouse and queue destinations leave it empty and configure Config instead.

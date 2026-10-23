@@ -18,10 +18,10 @@ import (
 // create and update and all acted on by the delivery path, and none of them were in any response --
 // so this struct had no field to decode five of them into, and the sixth carried a comment saying so.
 var endpointResponseFields = []string{
-	"id", "applicationId", "url", "description",
+	"id", "applicationId", "endpointType", "url", "destination", "pollUrl", "fifoEnabled", "description",
 	"secretPrefix", "hasSecret", "secretVersion", "signatureScheme", "publicKey",
 	"headers", "timeoutSeconds",
-	"isDisabled", "disabledAt", "disabledReason",
+	"isDisabled", "disabledAt", "disabledReason", "failingSince", "authentication",
 	"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 	"ipAllowlistNotes", "useStaticIp",
 	"circuitState", "circuitOpenedAt", "circuitFailureCount",

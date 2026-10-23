@@ -229,4 +229,3 @@ func TestGenerateEd25519TestHeaders(t *testing.T) {
 	}()
 	wh.GenerateTestHeaders([]byte(ed25519Payload), "")
 }
-

@@ -201,6 +201,8 @@ type SendMessageResponse struct {
 }
 
 // ListMessagesParams are the parameters for listing messages.
+//
+// Deprecated: no method takes this type. Messages.List takes ListOutboundMessagesParams.
 type ListMessagesParams struct {
 	Limit     *int    `json:"limit,omitempty"`
 	Offset    *int    `json:"offset,omitempty"`
