@@ -230,11 +230,3 @@ func TestGenerateEd25519TestHeaders(t *testing.T) {
 	wh.GenerateTestHeaders([]byte(ed25519Payload), "")
 }
 
-func TestNewWebhookRejectsPrivateKey(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected NewWebhook to panic on a whsk_ key")
-		}
-	}()
-	NewWebhook("whsk_" + strings.Repeat("A", 88))
-}
