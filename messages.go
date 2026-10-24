@@ -19,6 +19,10 @@ const (
 	MessageAwaitingRetry MessageStatus = "awaiting_retry"
 	MessageExhausted     MessageStatus = "exhausted"
 	MessageDLQ           MessageStatus = "dlq"
+	// MessageAwaitingPull is a message for a polling endpoint, waiting for its consumer to fetch it.
+	MessageAwaitingPull MessageStatus = "awaiting_pull"
+	// MessageFIFOWaiting is a message held behind an earlier one on a FIFO endpoint.
+	MessageFIFOWaiting MessageStatus = "fifo_waiting"
 )
 
 // OutboundMessage represents an outbound webhook message.
@@ -53,6 +57,10 @@ type OutboundMessage struct {
 	EndpointDescription *string                `json:"endpointDescription,omitempty"`
 	// Payload is the event payload as sent, or nil once retention has removed it.
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// TraceID is the W3C trace ID the send carried, when it had a traceparent. Get only.
+	TraceID *string `json:"traceId,omitempty"`
+	// EventVersion is the event-type version label the payload was sent as. Get only.
+	EventVersion *string `json:"eventVersion,omitempty"`
 
 	// Deprecated: the API has no such field; this was never populated by List or Get. Retry
 	// sets it to the replayed (original) message's ID. Use EventID for the event.
@@ -109,6 +117,8 @@ type MessageAttempt struct {
 	TriggeredByUser *string           `json:"triggeredByUser"`
 	CreatedAt       string            `json:"createdAt"`
 	CompletedAt     *string           `json:"completedAt"`
+	// EventVersion is the version label the attempt delivered the payload as.
+	EventVersion *string `json:"eventVersion,omitempty"`
 
 	// Deprecated: the API calls this messageId. Mirrors MessageID.
 	OutboundMessageID string `json:"-"`
@@ -158,6 +168,9 @@ type SendMessageParams struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Priority overrides the delivery priority: 0=critical, 1=high, 2=normal, 3=low, 4=bulk.
 	Priority *int `json:"priority,omitempty"`
+	// EventVersion is the event-type version the payload is in: "latest" (the default) or a
+	// version label.
+	EventVersion *string `json:"eventVersion,omitempty"`
 
 	// Deprecated: the API does not accept an event ID and ignores this field; it is no longer
 	// sent. Use IdempotencyKey to deduplicate sends.
@@ -188,6 +201,8 @@ type SendMessageResponse struct {
 }
 
 // ListMessagesParams are the parameters for listing messages.
+//
+// Deprecated: no method takes this type. Messages.List takes ListOutboundMessagesParams.
 type ListMessagesParams struct {
 	Limit     *int    `json:"limit,omitempty"`
 	Offset    *int    `json:"offset,omitempty"`
@@ -294,6 +309,9 @@ type MessagesResource struct {
 // option, else a generated UUID) in both the body and the Idempotency-Key header, and keeps the
 // same key across the SDK's retries, so a retried send is never delivered twice.
 func (r *MessagesResource) Send(ctx context.Context, applicationID string, params *SendMessageParams, opts ...RequestOption) (*SendMessageResponse, error) {
+	if params == nil {
+		return nil, &Error{Message: "hookbase: Messages.Send requires params with an EventType"}
+	}
 	body := map[string]interface{}{
 		"eventType": params.EventType,
 		"payload":   params.Payload,
@@ -317,6 +335,9 @@ func (r *MessagesResource) Send(ctx context.Context, applicationID string, param
 	}
 	if params.Priority != nil {
 		body["priority"] = *params.Priority
+	}
+	if params.EventVersion != nil {
+		body["eventVersion"] = *params.EventVersion
 	}
 
 	key := params.IdempotencyKey

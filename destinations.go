@@ -39,6 +39,12 @@ const (
 	DestinationR2        DestinationType = "r2"
 	DestinationGCS       DestinationType = "gcs"
 	DestinationAzureBlob DestinationType = "azure_blob"
+	// Queue and event-bus destinations.
+	DestinationSQS         DestinationType = "sqs"
+	DestinationEventBridge DestinationType = "eventbridge"
+	DestinationServiceBus  DestinationType = "servicebus"
+	DestinationPubSub      DestinationType = "pubsub"
+	DestinationOCIQueue    DestinationType = "oci_queue"
 )
 
 // S3Config is the configuration for an S3 warehouse destination.
@@ -168,8 +174,8 @@ type CreateDestinationParams struct {
 	// than a server-side default. A slug set here is sent exactly as given, including one the API
 	// will reject: this fills a gap, it does not launder a value.
 	Slug *string `json:"slug,omitempty"`
-	// Type defaults to http server-side. The API also accepts the queue and warehouse types; pass
-	// DestinationType("sqs") and friends for the ones this SDK has no constant for yet.
+	// Type defaults to http server-side. The API also accepts the queue, event-bus and storage
+	// types (DestinationSQS, DestinationS3 and so on).
 	Type *DestinationType `json:"type,omitempty"`
 	// URL is required for http destinations and must not resolve to a private or internal address.
 	// Warehouse and queue destinations leave it empty and configure Config instead.
@@ -341,23 +347,68 @@ type UpdateDestinationParams struct {
 	RetryCount *int `json:"-"`
 	// Deprecated: never accepted. See RetryCount.
 	RetryInterval *int `json:"-"`
+
+	// Clear names settings to remove: a nil or empty field above means "leave alone", so it cannot
+	// also mean "remove". Naming a field here sends a null for it. Naming a field that is also set
+	// is an error.
+	Clear []DestinationField `json:"-"`
 }
 
-// MarshalJSON folds the deprecated aliases into the fields the API accepts. Update posts this
-// struct directly, so whatever it emits is the PATCH body.
+// DestinationField names a destination setting, for UpdateDestinationParams.Clear.
+type DestinationField string
+
+// The destination settings the API accepts a null for.
+const (
+	// DestinationHeaders removes every custom header.
+	DestinationHeaders DestinationField = "headers"
+	// DestinationAuthType removes authentication (clear DestinationAuthConfig with it).
+	DestinationAuthType   DestinationField = "authType"
+	DestinationAuthConfig DestinationField = "authConfig"
+	// DestinationThrottle turns throttling off.
+	DestinationThrottle     DestinationField = "throttle"
+	DestinationConfig       DestinationField = "config"
+	DestinationFieldMapping DestinationField = "fieldMapping"
+)
+
+var clearableDestinationFields = map[DestinationField]bool{
+	DestinationHeaders: true, DestinationAuthType: true, DestinationAuthConfig: true,
+	DestinationThrottle: true, DestinationConfig: true, DestinationFieldMapping: true,
+}
+
+// MarshalJSON folds the deprecated aliases into the fields the API accepts, and adds a null for
+// each Clear field. Update posts this struct directly, so whatever it emits is the PATCH body.
 func (p UpdateDestinationParams) MarshalJSON() ([]byte, error) {
 	type wire UpdateDestinationParams
 	w := wire(p)
 	if w.TimeoutMs == nil {
 		w.TimeoutMs = p.Timeout
 	}
-	return json.Marshal(w)
+	encoded, err := json.Marshal(w)
+	if err != nil || len(p.Clear) == 0 {
+		return encoded, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, err
+	}
+	for _, f := range p.Clear {
+		if !clearableDestinationFields[f] {
+			return nil, fmt.Errorf("hookbase: UpdateDestinationParams.Clear names %q, which the API does not accept a null for", string(f))
+		}
+		if _, set := body[string(f)]; set {
+			return nil, fmt.Errorf("hookbase: UpdateDestinationParams.Clear names %q but that field is also set; clear it or set it, not both", string(f))
+		}
+		body[string(f)] = json.RawMessage("null")
+	}
+	return json.Marshal(body)
 }
 
 // ListDestinationsParams are the parameters for listing destinations.
 type ListDestinationsParams struct {
-	Page     *int    `json:"page,omitempty"`
-	PageSize *int    `json:"pageSize,omitempty"`
+	Page     *int `json:"page,omitempty"`
+	PageSize *int `json:"pageSize,omitempty"`
+	// Deprecated: the API does not filter destinations and ignores Search and IsActive; the page
+	// holds every destination. Filter the returned destinations yourself.
 	Search   *string `json:"search,omitempty"`
 	IsActive *bool   `json:"isActive,omitempty"`
 }

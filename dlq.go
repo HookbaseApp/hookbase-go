@@ -165,7 +165,7 @@ func (b *DLQBulkRetryResult) UnmarshalJSON(data []byte) error {
 type DLQBulkDeleteResult struct {
 	// Deprecated: not sent by the API; always 0.
 	Total int `json:"total"`
-	// Deleted is the number of IDs submitted, not a count of messages actually removed.
+	// Deleted is how many of the IDs were in the DLQ and were removed. Unknown IDs are not counted.
 	Deleted int `json:"deleted"`
 }
 

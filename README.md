@@ -43,8 +43,8 @@ func main() {
 ```go
 client := hookbase.New("your_api_key",
     hookbase.WithBaseURL("https://api.hookbase.app"),  // Custom base URL
-    hookbase.WithTimeout(10 * time.Second),            // Request timeout
-    hookbase.WithMaxRetries(3),                        // Retry attempts
+    hookbase.WithTimeout(10 * time.Second),            // http.Client timeout (default 30s; ignored with WithHTTPClient)
+    hookbase.WithMaxRetries(3),                        // Retries after the first attempt (default 3)
     hookbase.WithHTTPClient(customHTTPClient),         // Custom http.Client
     hookbase.WithDebug(true),                          // Debug logging
 )
@@ -61,13 +61,14 @@ client := hookbase.New("your_api_key",
 | `client.Routes` | Routing rules connecting sources to destinations |
 | `client.Events` | Received webhook events |
 | `client.Deliveries` | Delivery attempts and replays |
-| `client.Transforms` | Payload transformations (JSONata, JS) |
+| `client.Transforms` | Payload transformations (JSONata, JavaScript, Liquid, XSLT) |
 | `client.Filters` | Conditional routing filters |
 | `client.Schemas` | JSON Schema validation |
-| `client.APIKeys` | API key management |
+| `client.APIKeys` | API key management (List, Get, Delete; Create and RotateSecret need a dashboard session, not an API key) |
 | `client.Cron` | Scheduled cron jobs |
 | `client.Tunnels` | Local development tunnels |
 | `client.Providers` | Public provider catalog: signing-secret rules, event types |
+| `client.Analytics` | Delivery dashboard (`Dashboard`, `DashboardWithParams`) and all-time `Overview` |
 
 ### Outbound (Send Webhooks)
 
@@ -208,19 +209,37 @@ if err != nil {
 err = wh.Verify(requestBody, headers)
 ```
 
-`NewWebhook` also accepts a `whpk_` key. Rotating an Ed25519 endpoint returns the new public key
-(`RotateSecretResult.PublicKey`, plus `PreviousPublicKey`); during the grace period deliveries are
-signed with both keys, so a verifier holding either one accepts them. For tests, sign headers with
-`hookbase.GenerateEd25519TestHeaders(privateKey, payload, "")`.
+`NewWebhook` also accepts a `whpk_` key, and a `whsk_` secret key (base64 of the 32-byte seed
+followed by the public key; `NewWebhookSecretKey` returns an error instead of panicking). Rotating
+an Ed25519 endpoint returns the new public key (`RotateSecretResult.PublicKey`, plus
+`PreviousPublicKey`); during the grace period deliveries are signed with both keys, so a verifier
+holding either one accepts them. For tests, sign headers with
+`hookbase.GenerateEd25519TestHeaders(privateKey, payload, "")`, or build the verifier from
+`hookbase.EncodeEd25519SecretKey(privateKey)` and call `GenerateTestHeaders`. A verifier built from
+a `whpk_` public key cannot sign, so its `GenerateTestHeaders` panics.
 
 ### Per-Request Options
 
 ```go
-source, err := client.Sources.Get(ctx, "src_123",
-    hookbase.WithRequestTimeout(5 * time.Second),
-    hookbase.WithIdempotencyKey("unique-key-123"),
+err := client.Sources.Update(ctx, "src_123", params,
+    hookbase.WithRequestTimeout(5 * time.Second), // bound each attempt to 5s
+    hookbase.WithRequestRetries(0),               // don't retry this call
+)
+
+source, err := client.Sources.Create(ctx, createParams,
+    hookbase.WithIdempotencyKey("unique-key-123"), // lets this POST be retried on 5xx
 )
 ```
+
+- `WithRequestTimeout(d)` bounds **each attempt** (connect, send, read the whole response) to `d`.
+  Each retry gets a fresh `d`, and the backoff between attempts is not counted. An attempt that hits
+  the deadline is retried like a network error (so not for a `POST` without an idempotency key);
+  once retries run out the call returns a `*hookbase.TimeoutError`. It can shorten but not extend the
+  `http.Client` timeout (`WithTimeout`, or your own client's `Timeout`). To cap the whole call,
+  retries included, put a deadline on `ctx`.
+- `WithRequestRetries(n)` overrides `WithMaxRetries` for one call.
+- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. On a `POST` it also makes the request
+  eligible for retry after a 5xx or network error (see [Retry Behavior](#retry-behavior)).
 
 ### Optional Fields
 
@@ -243,14 +262,32 @@ params := &hookbase.UpdateEndpointParams{
 }
 ```
 
-`Clear` accepts the five endpoint settings the API takes a null for: `EndpointDescription`,
-`EndpointSuccessStatusCodes`, `EndpointBackoffType`, `EndpointRetryDelays` and
-`EndpointIPAllowlistNotes`. Naming anything else, or naming a field you also set on the same struct,
-is an error rather than a silent choice between the two.
+`UpdateEndpointParams.Clear` accepts the six endpoint settings the API takes a null for:
+`EndpointDescription`, `EndpointSuccessStatusCodes`, `EndpointBackoffType`, `EndpointRetryDelays`,
+`EndpointIPAllowlistNotes` and `EndpointAuth`. Naming anything else, or naming a field you also set
+on the same struct, is an error rather than a silent choice between the two. `UpdateSourceParams`,
+`UpdateDestinationParams`, `UpdateRouteParams` and `UpdateSubscriptionParams` have a `Clear` field
+that works the same way, with `Source*`, `Destination*`, `Route*` and `Subscription*` constants.
+
+### Application-scoped methods
+
+The API addresses endpoints, subscriptions, messages and portal tokens by ID alone, so the
+`applicationID` argument of their `Get`, `Update`, `Delete` and similar methods is not sent.
+The endpoint methods check it on the client instead. `Endpoints.Get` and `GetStats` check the
+returned endpoint's application. `Update`, `Delete`, `Enable`, `Disable`, `RotateSecret`, `Test` and
+`RecoverCircuit` first read the endpoint (one extra GET) and change nothing if it belongs to another
+application. A mismatch returns a `*NotFoundError` with code `application_mismatch`. Pass `""` to
+skip the check and the extra request.
+
+`Endpoints.GetStats` makes two requests: lifetime counters from the endpoint, and `RecentFailures`
+(the last 24 hours) from the endpoint analytics. A key that cannot read analytics gets the counters
+with `RecentFailures` left at 0.
 
 ## Error Handling
 
-All API errors are typed for easy handling with `errors.As`:
+All API errors are typed for easy handling with `errors.As`. Every typed API error also unwraps to
+`*hookbase.APIError`, so `errors.As(err, &apiErr)` gives you `Status`, `Code` and `RequestID` for
+any of them:
 
 ```go
 _, err := client.Sources.Get(ctx, "nonexistent")
@@ -258,6 +295,7 @@ if err != nil {
     var notFound *hookbase.NotFoundError
     var authErr  *hookbase.AuthenticationError
     var validErr *hookbase.ValidationError
+    var conflict *hookbase.ConflictError
     var rateErr  *hookbase.RateLimitError
 
     switch {
@@ -267,6 +305,8 @@ if err != nil {
         fmt.Println("Check your API key")
     case errors.As(err, &validErr):
         fmt.Printf("Validation: %v\n", validErr.ValidationErrors)
+    case errors.As(err, &conflict):
+        fmt.Println("Conflicts with an existing resource (e.g. duplicate slug)")
     case errors.As(err, &rateErr):
         fmt.Printf("Rate limited, retry after %ds\n", rateErr.RetryAfter)
     default:
@@ -277,13 +317,22 @@ if err != nil {
 
 ## Retry Behavior
 
-- Retries on 5xx errors, network errors and 429 (rate limit) with exponential backoff
+| Outcome | Retried? |
+|---------|----------|
+| 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid). A `Retry-After` over 60s is returned as a `*RateLimitError` at once instead of being waited out |
+| 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
+| Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
+| Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
+| `WithRequestTimeout` deadline hit on one attempt | Same as 5xx; `*TimeoutError` once retries run out |
+| `ctx` cancelled or past its deadline | No, returns `*TimeoutError` (`errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` work) |
+
 - A `POST` is retried after a 5xx or network error only when it carries an idempotency key
   (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
-  a duplicate
-- No retry on 4xx client errors (400, 401, 403, 404)
-- Default: 3 retries with 1s base backoff, 10s max, random jitter
-- Rate limit errors respect the `Retry-After` header
+  a duplicate.
+- Default: 3 retries (4 attempts in total); a negative count is treated as 0. Backoff is 1s, 2s,
+  4s, ... capped at 10s, plus up to 1s of random jitter.
+- Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
+  `*TimeoutError`.
 
 ## License
 

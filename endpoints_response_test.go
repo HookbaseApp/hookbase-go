@@ -18,10 +18,10 @@ import (
 // create and update and all acted on by the delivery path, and none of them were in any response --
 // so this struct had no field to decode five of them into, and the sixth carried a comment saying so.
 var endpointResponseFields = []string{
-	"id", "applicationId", "url", "description",
+	"id", "applicationId", "endpointType", "url", "destination", "pollUrl", "fifoEnabled", "description",
 	"secretPrefix", "hasSecret", "secretVersion", "signatureScheme", "publicKey",
 	"headers", "timeoutSeconds",
-	"isDisabled", "disabledAt", "disabledReason",
+	"isDisabled", "disabledAt", "disabledReason", "failingSince", "authentication",
 	"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 	"ipAllowlistNotes", "useStaticIp",
 	"circuitState", "circuitOpenedAt", "circuitFailureCount",
@@ -180,13 +180,13 @@ func TestRotateSecretDecodesBothSchemes(t *testing.T) {
 			defer server.Close()
 			client := New("test_key", WithBaseURL(server.URL))
 
-			res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "app_1", "ep_1", nil)
+			res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "", "ep_1", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			tc.check(t, res)
 
-			got, err := client.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+			got, err := client.Endpoints.RotateSecret(context.Background(), "", "ep_1")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

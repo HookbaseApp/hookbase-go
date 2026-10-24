@@ -2,6 +2,7 @@ package hookbase
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 )
 
@@ -11,7 +12,12 @@ type TransformType string
 const (
 	TransformJSONata    TransformType = "jsonata"
 	TransformJavaScript TransformType = "javascript"
-	TransformMapping    TransformType = "mapping"
+	TransformXSLT       TransformType = "xslt"
+	TransformLiquid     TransformType = "liquid"
+
+	// Deprecated: the API has no "mapping" transform type and rejects it with a 400. Use one of
+	// the four engines above.
+	TransformMapping TransformType = "mapping"
 )
 
 // ContentFormat represents the content format.
@@ -20,8 +26,10 @@ type ContentFormat string
 const (
 	ContentJSON ContentFormat = "json"
 	ContentXML  ContentFormat = "xml"
-	ContentForm ContentFormat = "form"
 	ContentText ContentFormat = "text"
+
+	// Deprecated: the API accepts only json, xml and text, and rejects "form" with a 400.
+	ContentForm ContentFormat = "form"
 )
 
 // Transform represents a webhook payload transformation.
@@ -35,9 +43,38 @@ type Transform struct {
 	Code           string        `json:"code"`
 	InputFormat    ContentFormat `json:"inputFormat"`
 	OutputFormat   ContentFormat `json:"outputFormat"`
-	Version        int           `json:"version"`
-	CreatedAt      string        `json:"createdAt"`
-	UpdatedAt      string        `json:"updatedAt"`
+	// IsActive reports whether routes may use the transform.
+	IsActive FlexBool `json:"isActive"`
+	// Deprecated: always 0; the API does not version transforms.
+	Version   int    `json:"-"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// UnmarshalJSON also reads the snake_case transform_type, input_format and output_format keys
+// the Create response uses.
+func (t *Transform) UnmarshalJSON(data []byte) error {
+	type plain Transform
+	var w struct {
+		plain
+		TransformTypeSnake ContentFormat `json:"transform_type"`
+		InputFormatSnake   ContentFormat `json:"input_format"`
+		OutputFormatSnake  ContentFormat `json:"output_format"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*t = Transform(w.plain)
+	if t.TransformType == "" {
+		t.TransformType = TransformType(w.TransformTypeSnake)
+	}
+	if t.InputFormat == "" {
+		t.InputFormat = w.InputFormatSnake
+	}
+	if t.OutputFormat == "" {
+		t.OutputFormat = w.OutputFormatSnake
+	}
+	return nil
 }
 
 // CreateTransformParams are the parameters for creating a transform.
@@ -59,6 +96,8 @@ type UpdateTransformParams struct {
 	Code          *string        `json:"code,omitempty"`
 	InputFormat   *ContentFormat `json:"inputFormat,omitempty"`
 	OutputFormat  *ContentFormat `json:"outputFormat,omitempty"`
+	// IsActive enables or disables the transform.
+	IsActive *bool `json:"isActive,omitempty"`
 }
 
 // ListTransformsParams are the parameters for listing transforms.

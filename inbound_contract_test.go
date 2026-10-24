@@ -369,6 +369,9 @@ func TestCronCreateAndUpdateSendPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, r := range srv.all() {
+		if r.Method == "GET" {
+			continue // Update reads the job back
+		}
 		body := decodeBody(t, r)
 		if _, ok := body["payload"]; !ok {
 			t.Errorf("request %d did not send payload: %s", i, r.Body)

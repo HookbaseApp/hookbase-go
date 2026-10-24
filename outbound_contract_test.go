@@ -275,7 +275,7 @@ func TestSendEventGeneratesFreshKeyPerCall(t *testing.T) {
 func TestPostWithoutKeyIsNotRetriedOnServerError(t *testing.T) {
 	srv := newRecordingServer(t, cannedResponse{status: 500, body: map[string]string{"error": "boom"}})
 	client := New("test_key", WithBaseURL(srv.URL), WithMaxRetries(3))
-	_, err := client.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+	_, err := client.Endpoints.RotateSecret(context.Background(), "", "ep_1")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -672,14 +672,14 @@ func TestRotateSecretWithParams(t *testing.T) {
 	}})
 	client := New("test_key", WithBaseURL(srv.URL))
 
-	res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "app_1", "ep_1", &RotateSecretParams{GracePeriodSeconds: Ptr(0)})
+	res, err := client.Endpoints.RotateSecretWithParams(context.Background(), "", "ep_1", &RotateSecretParams{GracePeriodSeconds: Ptr(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Secret != "whsec_new" || res.PreviousSecretExpiresAt != "2026-10-17T13:00:00Z" || res.SecretVersion != 3 {
 		t.Errorf("result = %+v", res)
 	}
-	secret, err := client.Endpoints.RotateSecret(context.Background(), "app_1", "ep_1")
+	secret, err := client.Endpoints.RotateSecret(context.Background(), "", "ep_1")
 	if err != nil || secret != "whsec_new" {
 		t.Errorf("RotateSecret = %q, %v", secret, err)
 	}

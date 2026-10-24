@@ -20,17 +20,25 @@ const defaultTolerance = 300 // 5 minutes in seconds
 // ed25519PublicKeyPrefix marks a Standard Webhooks Ed25519 public key, "whpk_<base64 of 32 bytes>".
 const ed25519PublicKeyPrefix = "whpk_"
 
+// ed25519SecretKeyPrefix marks a Standard Webhooks Ed25519 secret key,
+// "whsk_<base64 of the 32-byte seed followed by the 32-byte public key>". That is the layout of a Go
+// ed25519.PrivateKey, and the one the API stores for an Ed25519 endpoint.
+const ed25519SecretKeyPrefix = "whsk_"
+
 // Webhook handles webhook signature verification.
 //
 // A Webhook verifies one Standard Webhooks scheme, picked by the key it was built from:
 //   - an HMAC signing secret ("whsec_...") verifies "v1,<base64>" entries;
 //   - an Ed25519 public key ("whpk_...") verifies "v1a,<base64>" entries, which Hookbase sends for
-//     endpoints whose SignatureScheme is SignatureSchemeEd25519.
+//     endpoints whose SignatureScheme is SignatureSchemeEd25519;
+//   - an Ed25519 secret key ("whsk_...") verifies "v1a" entries too, and can also sign test
+//     headers. Hookbase never hands these out: they are for keys you generate in tests.
 //
 // Entries of the other scheme in the webhook-signature header are ignored.
 type Webhook struct {
-	secret    []byte
-	publicKey ed25519.PublicKey
+	secret     []byte
+	publicKey  ed25519.PublicKey
+	privateKey ed25519.PrivateKey
 }
 
 // NewWebhook creates a new Webhook verifier with the given signing secret.
@@ -40,8 +48,9 @@ type Webhook struct {
 // hex characters is a legacy hex secret; anything else is base64.
 //
 // An Ed25519 endpoint's public key ("whpk_...") is accepted here too and gives a verifier for
-// "v1a" signatures, as NewWebhookPublicKey does. NewWebhook panics if such a key is malformed;
-// use NewWebhookPublicKey to get an error instead.
+// "v1a" signatures, as NewWebhookPublicKey does; so is an Ed25519 secret key ("whsk_...", see
+// NewWebhookSecretKey). NewWebhook panics if such a key is malformed; use NewWebhookPublicKey or
+// NewWebhookSecretKey to get an error instead.
 func NewWebhook(secret string) *Webhook {
 	if secret == "" {
 		panic("hookbase: webhook secret is required")
@@ -53,10 +62,44 @@ func NewWebhook(secret string) *Webhook {
 		}
 		return wh
 	}
-	if strings.HasPrefix(secret, "whsk_") {
-		panic("hookbase: whsk_ is an Ed25519 private key; verify with the endpoint's whpk_ public key, or sign test headers with GenerateEd25519TestHeaders")
+	if strings.HasPrefix(secret, ed25519SecretKeyPrefix) {
+		wh, err := NewWebhookSecretKey(secret)
+		if err != nil {
+			panic(err.Error())
+		}
+		return wh
 	}
 	return &Webhook{secret: decodeWebhookSecret(secret)}
+}
+
+// NewWebhookSecretKey creates a Webhook from an Ed25519 secret key, "whsk_" followed by the base64
+// of the 32-byte seed and the 32-byte public key (EncodeEd25519SecretKey produces it). The result
+// verifies "v1a" signatures like a verifier built from the matching public key, and its
+// GenerateTestHeaders signs "v1a" headers. Hookbase never returns an endpoint's secret key, so this
+// is for keys you generate yourself, typically in tests.
+func NewWebhookSecretKey(secretKey string) (*Webhook, error) {
+	if !strings.HasPrefix(secretKey, ed25519SecretKeyPrefix) {
+		return nil, fmt.Errorf("hookbase: Ed25519 secret key must start with %q", ed25519SecretKeyPrefix)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(secretKey, ed25519SecretKeyPrefix))
+	if err != nil {
+		return nil, fmt.Errorf("hookbase: Ed25519 secret key is not valid base64: %w", err)
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("hookbase: Ed25519 secret key must be %d bytes (seed || public key), got %d", ed25519.PrivateKeySize, len(raw))
+	}
+	priv := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+	pub := priv.Public().(ed25519.PublicKey)
+	if subtle.ConstantTimeCompare(pub, raw[ed25519.SeedSize:]) != 1 {
+		return nil, fmt.Errorf("hookbase: Ed25519 secret key's public half does not match its seed")
+	}
+	return &Webhook{publicKey: pub, privateKey: priv}, nil
+}
+
+// EncodeEd25519SecretKey returns the "whsk_" form of an Ed25519 private key, which
+// NewWebhookSecretKey and NewWebhook accept. It is mostly useful in tests.
+func EncodeEd25519SecretKey(privateKey ed25519.PrivateKey) string {
+	return ed25519SecretKeyPrefix + base64.StdEncoding.EncodeToString(privateKey)
 }
 
 // NewWebhookPublicKey creates a Webhook verifier for Ed25519 ("v1a") signatures from an
@@ -212,13 +255,17 @@ func (w *Webhook) VerifyAndParse(payload []byte, headers map[string]string, v in
 	return json.Unmarshal(payload, v)
 }
 
-// GenerateTestHeaders generates valid webhook headers for testing.
+// GenerateTestHeaders generates valid webhook headers for testing: "v1" (HMAC-SHA256) for a
+// "whsec_" secret, "v1a" (Ed25519) for a "whsk_" secret key. webhookID defaults to "msg_test".
 //
-// It needs the HMAC secret, so it panics on a verifier built from an Ed25519 public key; use
-// GenerateEd25519TestHeaders with the matching private key instead.
+// A verifier built from a public key ("whpk_") has nothing to sign with, so GenerateTestHeaders
+// panics on it; use GenerateEd25519TestHeaders with the matching private key instead.
 func (w *Webhook) GenerateTestHeaders(payload []byte, webhookID string) map[string]string {
+	if w.privateKey != nil {
+		return GenerateEd25519TestHeaders(w.privateKey, payload, webhookID)
+	}
 	if w.publicKey != nil {
-		panic("hookbase: GenerateTestHeaders needs an HMAC secret; use GenerateEd25519TestHeaders for an Ed25519 verifier")
+		panic("hookbase: GenerateTestHeaders needs an HMAC secret or an Ed25519 secret key; use GenerateEd25519TestHeaders for a public-key verifier")
 	}
 	if webhookID == "" {
 		webhookID = "msg_test"

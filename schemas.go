@@ -32,12 +32,17 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		plain
 		JSONSchema json.RawMessage `json:"jsonSchema"`
+		// Create answers with json_schema, in snake_case.
+		JSONSchemaSnake json.RawMessage `json:"json_schema"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*s = Schema(decoded.plain)
 	raw := decoded.JSONSchema
+	if len(raw) == 0 {
+		raw = decoded.JSONSchemaSnake
+	}
 	switch {
 	case len(raw) == 0 || string(raw) == "null":
 		s.JSONSchema = ""
@@ -53,8 +58,9 @@ func (s *Schema) UnmarshalJSON(data []byte) error {
 
 // CreateSchemaParams are the parameters for creating a schema.
 type CreateSchemaParams struct {
-	Name        string                 `json:"name"`
-	Slug        *string                `json:"slug,omitempty"`
+	Name string `json:"name"`
+	// Deprecated: not sent. The API always derives the slug from Name and ignored this field.
+	Slug        *string                `json:"-"`
 	Description *string                `json:"description,omitempty"`
 	JSONSchema  map[string]interface{} `json:"jsonSchema"`
 }
@@ -88,8 +94,57 @@ func (p *ListSchemasParams) toQuery() url.Values {
 
 // SchemaValidationResult is the result of validating a payload against a schema.
 type SchemaValidationResult struct {
-	Valid  bool     `json:"valid"`
-	Errors []string `json:"errors"`
+	Valid bool `json:"valid"`
+	// Errors lists what failed, one "path: message" line per failure. Failures has the same
+	// list with path and message apart. Before v1.13.0 the API's {path, message} objects could not
+	// decode into this field, so every failed validation returned an error instead of a result.
+	Errors []string `json:"-"`
+	// Failures lists what failed, structured.
+	Failures []SchemaValidationError `json:"-"`
+	// Payload echoes the validated payload.
+	Payload json.RawMessage `json:"payload"`
+}
+
+// SchemaValidationError is one validation failure.
+type SchemaValidationError struct {
+	// Path locates the failing value: "items[0].sku" for a nested array item, "root" for the
+	// payload itself.
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// UnmarshalJSON reads the API's {path, message} failures into Failures and formats Errors from
+// them. A plain string in the list (an older shape) is kept as its own line.
+func (r *SchemaValidationResult) UnmarshalJSON(data []byte) error {
+	type plain SchemaValidationResult
+	var w struct {
+		plain
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*r = SchemaValidationResult(w.plain)
+	r.Errors, r.Failures = nil, nil
+	for _, raw := range w.Errors {
+		var f SchemaValidationError
+		if err := json.Unmarshal(raw, &f); err == nil {
+			r.Failures = append(r.Failures, f)
+			if f.Path != "" {
+				r.Errors = append(r.Errors, f.Path+": "+f.Message)
+			} else {
+				r.Errors = append(r.Errors, f.Message)
+			}
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		r.Failures = append(r.Failures, SchemaValidationError{Message: s})
+		r.Errors = append(r.Errors, s)
+	}
+	return nil
 }
 
 // SchemasResource provides access to schema-related API endpoints.
