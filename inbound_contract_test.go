@@ -550,3 +550,16 @@ func TestDestinationsImportValidateOnly(t *testing.T) {
 		t.Errorf("Summary = %+v", res.Summary)
 	}
 }
+
+func TestTransformTypesMatchAPIEngines(t *testing.T) {
+	want := map[TransformType]string{
+		TransformJSONata: "jsonata", TransformJavaScript: "javascript", TransformTypeScript: "typescript",
+		TransformLiquid: "liquid", TransformXSLT: "xslt", TransformJMESPath: "jmespath",
+		TransformJSONLogic: "jsonlogic", TransformJQ: "jq",
+	}
+	for got, s := range want {
+		if string(got) != s {
+			t.Errorf("constant %q != %q", got, s)
+		}
+	}
+}

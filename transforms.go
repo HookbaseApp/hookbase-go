@@ -15,8 +15,16 @@ const (
 	TransformXSLT       TransformType = "xslt"
 	TransformLiquid     TransformType = "liquid"
 
+	// TransformTypeScript is JavaScript with type annotations; types are stripped, not checked.
+	TransformTypeScript TransformType = "typescript"
+	TransformJMESPath   TransformType = "jmespath"
+	TransformJSONLogic  TransformType = "jsonlogic"
+	// TransformJQ needs transform isolation on the server. Without it the API answers
+	// TRANSFORM_ENGINE_UNAVAILABLE.
+	TransformJQ TransformType = "jq"
+
 	// Deprecated: the API has no "mapping" transform type and rejects it with a 400. Use one of
-	// the four engines above.
+	// the engines above.
 	TransformMapping TransformType = "mapping"
 )
 
