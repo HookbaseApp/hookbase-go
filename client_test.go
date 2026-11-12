@@ -289,6 +289,82 @@ func TestDebugLogging(t *testing.T) {
 	}
 }
 
+// WithDebug logs request and response bodies, and several of them carry secrets: a destination's
+// signingSecret (Create, RevealSecret, RotateSecret), a source's, an endpoint's secret and an
+// OAuth clientSecret. Their values are redacted, in requests and responses alike.
+func TestDebugLoggingRedactsSecrets(t *testing.T) {
+	const (
+		sent     = "whsec_sentInTheRequest"
+		created  = "whsec_returnedByCreate"
+		previous = "whsec_previous\\\"quoted"
+	)
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{"source": map[string]interface{}{
+			"id": "src_1", "hasSigningSecret": true, "signingSecret": created, "secretPrefix": "whsec_ret",
+		}}},
+		cannedResponse{body: `{"signingSecret" : "` + created + `", "previousSecret":"` + previous + `",` +
+			`"secret":"whsec_endpoint","clientSecret":"cs_live","previousSecretExpiresAt":"2026-11-12T00:00:00Z"}`},
+	)
+
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	defer func() { log.SetOutput(prev); log.SetFlags(flags) }()
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Sources.Create(context.Background(), &CreateSourceParams{Name: "n", Slug: "s", SigningSecret: Ptr(sent)}); err != nil {
+		t.Fatal(err)
+	}
+	revealed, err := client.Destinations.RevealSecret(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := buf.String()
+	for _, secret := range []string{sent, created, "whsec_previous", "whsec_endpoint", "cs_live"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("debug log contains the secret %q:\n%s", secret, logged)
+		}
+	}
+	for _, want := range []string{
+		`"signingSecret":"[REDACTED]"`, `"signingSecret" : "[REDACTED]"`, `"previousSecret":"[REDACTED]"`,
+		`"secret":"[REDACTED]"`, `"clientSecret":"[REDACTED]"`,
+		// Not secrets: kept as they are.
+		`"hasSigningSecret":true`, `"secretPrefix":"whsec_ret"`, `"previousSecretExpiresAt":"2026-11-12T00:00:00Z"`,
+		`"name":"n"`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, logged)
+		}
+	}
+	// The caller still gets the real values; only the log is redacted.
+	if revealed.SigningSecret != created {
+		t.Errorf("RevealSecret returned %q, want the real secret", revealed.SigningSecret)
+	}
+	if r := srv.all()[0]; !strings.Contains(string(r.Body), sent) {
+		t.Errorf("the request itself must carry the secret, sent %s", r.Body)
+	}
+}
+
+func TestRedactSecrets(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
+		{`{"a":{"webhookSecret":"x\"y","n":1}}`, `{"a":{"webhookSecret":"[REDACTED]","n":1}}`},
+		{`[{"signingSecret":"a"},{"signingSecret":"b"}]`, `[{"signingSecret":"[REDACTED]"},{"signingSecret":"[REDACTED]"}]`},
+		// Case-sensitive, string values only, whole keys only.
+		{`{"Secret":"x"}`, `{"Secret":"[REDACTED]"}`},
+		{`{"SECRET":"x","secrets":"y","secretAccessKey":"z"}`, `{"SECRET":"x","secrets":"y","secretAccessKey":"z"}`},
+		{`{"hasSigningSecret":true,"signingSecret":null}`, `{"hasSigningSecret":true,"signingSecret":null}`},
+		// A key name inside a string value is not a key.
+		{`{"note":"the \"secret\": \"kept\""}`, `{"note":"the \"secret\": \"kept\""}`},
+		{`not json`, `not json`},
+		{``, ``},
+	} {
+		if got := redactSecrets([]byte(tc.in)); got != tc.want {
+			t.Errorf("redactSecrets(%s)\n got %s\nwant %s", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestNewIdempotencyKeyIsUUIDv4(t *testing.T) {
 	a, b := newIdempotencyKey(), newIdempotencyKey()
 	if a == b || len(a) != 36 || a[14] != '4' || !strings.ContainsRune("89ab", rune(a[19])) {

@@ -510,8 +510,21 @@ type DestinationTestResult struct {
 // TestDestinationParams are the parameters for TestWithParams.
 type TestDestinationParams struct {
 	// Payload is the sample payload a bridge destination resolves its event type from, and must
-	// be a JSON object. Nil uses the API's test payload. Other destination types ignore it.
+	// be a JSON object. Nil uses the API's test payload; an empty, non-nil map is sent as {}.
+	// Other destination types ignore it.
 	Payload map[string]interface{} `json:"payload,omitempty"`
+}
+
+// MarshalJSON sends a non-nil Payload even when it is empty, so a dry run can test {}.
+// `omitempty` would drop an empty map as well as a nil one.
+func (p TestDestinationParams) MarshalJSON() ([]byte, error) {
+	var w struct {
+		Payload *map[string]interface{} `json:"payload,omitempty"`
+	}
+	if p.Payload != nil {
+		w.Payload = &p.Payload
+	}
+	return json.Marshal(w)
 }
 
 // DestinationSecret is a destination's signing secret, as RevealSecret and RotateSecret return
@@ -619,7 +632,8 @@ func (r *DestinationsResource) TestWithParams(ctx context.Context, id string, pa
 }
 
 // RevealSecret returns an HTTP destination's signing secret. The API answers 400 for a destination
-// of another type, which has no secret.
+// of another type, which has no secret, and 404 for an HTTP destination that has no secret yet
+// (one made before destinations were signed): RotateSecret issues it one.
 func (r *DestinationsResource) RevealSecret(ctx context.Context, id string, opts ...RequestOption) (*DestinationSecret, error) {
 	var resp DestinationSecret
 	if err := r.t.do(ctx, "GET", "/api/destinations/"+url.PathEscape(id)+"/reveal-secret", nil, nil, &resp, opts...); err != nil {

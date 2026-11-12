@@ -213,16 +213,22 @@ bridge, err := client.Destinations.Create(ctx, &hookbase.CreateDestinationParams
 dry, err := client.Destinations.TestWithParams(ctx, bridge.ID, &hookbase.TestDestinationParams{
     Payload: map[string]interface{}{"type": "charge.succeeded"},
 })
-fmt.Println(*dry.EventType, dry.EventTypeExists, dry.MatchingEndpoints)
+if dry.EventType == nil {
+    // The event type could not be resolved from the payload; dry.Error says why.
+    fmt.Println("no event type:", dry.Error)
+} else {
+    fmt.Println(*dry.EventType, dry.EventTypeExists, dry.MatchingEndpoints)
+}
 ```
 
 ### Holds While a Circuit Is Open
 
 While a route's or an endpoint's circuit breaker is open, its deliveries are held
-(`DeliveryHeld`, `MessageHeld`) instead of failing, and are sent once it recovers. A held delivery
-has `HoldExpiresAt` set instead of `NextRetryAt`; one still held then is dead-lettered. Turn it off
-per route or endpoint with `HoldOnCircuitOpen: hookbase.Ptr(false)`. `Routes.Get` and
-`Endpoints.Get` report `HeldCount` (capped at 10,000, with `HeldCountCapped`).
+(`DeliveryHeld`, `MessageHeld`) and sent once it recovers. A held delivery has `HoldExpiresAt` set
+instead of `NextRetryAt`; one still held then is dead-lettered. Turn holds off per route or
+endpoint with `HoldOnCircuitOpen: hookbase.Ptr(false)`: a delivery is then dead-lettered as soon as
+it meets the open circuit. `Routes.Get` and `Endpoints.Get` report `HeldCount` (capped at 10,000,
+with `HeldCountCapped`).
 
 A failed delivery whose next retry is more than a minute away is `DeliveryAwaitingRetry`. Listing
 deliveries with `Status: hookbase.Ptr(hookbase.DeliveryPending)` also returns awaiting-retry and
@@ -410,6 +416,8 @@ Every change is an addition; no signature or existing field changed.
   and `OutboundMessage.Bridge`.
 - `EventDebugInfo.Deliveries`.
 - `CatalogProvider` on `Source` and `CreateSourceParams`.
+- `WithDebug` redacts secret values in the request and response bodies it logs: any JSON key
+  named `secret` or ending in `Secret`, such as `signingSecret` and `clientSecret`.
 
 If your code switches on a delivery or message status, add cases for the new ones: a delivery
 that used to read `pending` between retries may now read `awaiting_retry` or `held`.

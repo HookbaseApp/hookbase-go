@@ -690,6 +690,110 @@ func TestDeliveriesReplayWithParamsRejectsBothPayloadEdits(t *testing.T) {
 	}
 }
 
+// omitempty drops only a nil interface, so a nil map, slice, pointer or json.RawMessage inside
+// ModifiedPayload or PayloadPatch went out as null: the API replays a null modifiedPayload as the
+// literal body null and answers 400 to a null payloadPatch. A nil or JSON-null edit is not sent,
+// and doesn't count toward the "not both" check.
+func TestDeliveriesReplayWithParamsDropsNilishPayloadEdits(t *testing.T) {
+	var nilMap map[string]interface{}
+	var nilSlice []interface{}
+	var nilPtr *map[string]interface{}
+	nilish := map[string]interface{}{
+		"nil map":           nilMap,
+		"nil slice":         nilSlice,
+		"nil pointer":       nilPtr,
+		"nil RawMessage":    json.RawMessage(nil),
+		"null RawMessage":   json.RawMessage("null"),
+		"spaced null":       json.RawMessage(" null\n"),
+		"pointer to null":   Ptr(json.RawMessage("null")),
+		"pointer to nilmap": &nilMap,
+	}
+	for name, v := range nilish {
+		t.Run(name, func(t *testing.T) {
+			srv := newRecordingServer(t, replayResponse())
+			client := New("test_key", WithBaseURL(srv.URL))
+
+			for _, params := range []*ReplayParams{
+				{ModifiedPayload: v, HeadersOverride: map[string]string{"X-A": "1"}},
+				{PayloadPatch: v, HeadersOverride: map[string]string{"X-A": "1"}},
+			} {
+				if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", params); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The other field set for real: the nil one is not "both".
+			for _, params := range []*ReplayParams{
+				{ModifiedPayload: v, PayloadPatch: map[string]interface{}{"a": nil}},
+				{ModifiedPayload: map[string]interface{}{"a": 1}, PayloadPatch: v},
+			} {
+				if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", params); err != nil {
+					t.Fatalf("a nil-ish edit counted toward both: %v", err)
+				}
+			}
+			reqs := srv.all()
+			want := []string{
+				`{"headersOverride":{"X-A":"1"}}`,
+				`{"headersOverride":{"X-A":"1"}}`,
+				`{"payloadPatch":{"a":null}}`,
+				`{"modifiedPayload":{"a":1}}`,
+			}
+			for i, w := range want {
+				if string(reqs[i].Body) != w {
+					t.Errorf("request %d body = %s, want %s", i, reqs[i].Body, w)
+				}
+			}
+		})
+	}
+}
+
+// Values that are empty but not null still go out: {} and [] are payloads, and a patch that sets
+// a key to null is how a merge patch deletes it.
+func TestDeliveriesReplayWithParamsKeepsEmptyPayloads(t *testing.T) {
+	for _, tc := range []struct {
+		params ReplayParams
+		want   string
+	}{
+		{ReplayParams{ModifiedPayload: map[string]interface{}{}}, `{"modifiedPayload":{}}`},
+		{ReplayParams{ModifiedPayload: []interface{}{}}, `{"modifiedPayload":[]}`},
+		{ReplayParams{ModifiedPayload: json.RawMessage(`""`)}, `{"modifiedPayload":""}`},
+		{ReplayParams{ModifiedPayload: 0}, `{"modifiedPayload":0}`},
+		{ReplayParams{ModifiedPayload: false}, `{"modifiedPayload":false}`},
+		{ReplayParams{PayloadPatch: json.RawMessage(`{"note":null}`)}, `{"payloadPatch":{"note":null}}`},
+	} {
+		b, err := json.Marshal(tc.params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("marshal = %s, want %s", b, tc.want)
+		}
+		// And through a pointer, as ReplayWithParams sends it.
+		p := tc.params
+		if b, _ := json.Marshal(&p); string(b) != tc.want {
+			t.Errorf("marshal via pointer = %s, want %s", b, tc.want)
+		}
+	}
+}
+
+func TestIsNilish(t *testing.T) {
+	var nilMap map[string]int
+	var nilIface interface{}
+	for _, tc := range []struct {
+		v    interface{}
+		want bool
+	}{
+		{nil, true}, {nilMap, true}, {[]int(nil), true}, {(*int)(nil), true},
+		{json.RawMessage(nil), true}, {json.RawMessage("null"), true}, {json.RawMessage("\tnull "), true},
+		{&nilIface, true}, {(func())(nil), true},
+		{map[string]int{}, false}, {[]int{}, false}, {Ptr(0), false}, {0, false}, {"", false},
+		{json.RawMessage("{}"), false}, {json.RawMessage(`"null"`), false}, {[]byte("null"), false},
+	} {
+		if got := isNilish(tc.v); got != tc.want {
+			t.Errorf("isNilish(%#v) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}
+
 // A plain Replay still decodes the response it always did; the new flags read false.
 func TestDeliveriesReplayResultWithoutEdits(t *testing.T) {
 	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
@@ -979,6 +1083,36 @@ func TestDestinationTestWithParamsBridgeDryRun(t *testing.T) {
 	}
 	if len(reqs[1].Body) != 0 {
 		t.Errorf("Test should send no body, got %s", reqs[1].Body)
+	}
+}
+
+// An empty, non-nil Payload is sent as {}, so a bridge dry run can test an empty object; a nil one
+// is still left out.
+func TestTestDestinationParamsPayload(t *testing.T) {
+	for _, tc := range []struct {
+		params TestDestinationParams
+		want   string
+	}{
+		{TestDestinationParams{}, `{}`},
+		{TestDestinationParams{Payload: map[string]interface{}{}}, `{"payload":{}}`},
+		{TestDestinationParams{Payload: map[string]interface{}{"type": "a"}}, `{"payload":{"type":"a"}}`},
+	} {
+		b, err := json.Marshal(tc.params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("marshal = %s, want %s", b, tc.want)
+		}
+	}
+
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{"success": false, "dryRun": true}})
+	if _, err := New("test_key", WithBaseURL(srv.URL)).Destinations.TestWithParams(context.Background(), "dst_b",
+		&TestDestinationParams{Payload: map[string]interface{}{}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := srv.only(t); string(r.Body) != `{"payload":{}}` {
+		t.Errorf("TestWithParams sent %s, want {\"payload\":{}}", r.Body)
 	}
 }
 

@@ -12,8 +12,10 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +23,22 @@ import (
 // 1.5.0 through v1.6.0, v1.7.0 and v1.8.0, so those releases all identified themselves to the
 // API as 1.5.0.
 const sdkVersion = "1.14.0"
+
+// secretField matches a JSON member whose key is secret or ends in Secret (signingSecret,
+// previousSecret, clientSecret) and whose value is a string. The key is matched case-sensitively,
+// as the API names it, so hasSigningSecret (a boolean) and secretPrefix are not touched. It is
+// compiled on first use, so a client without WithDebug never pays for it.
+var secretField = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`"(secret|[A-Za-z0-9_]*Secret)"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
+})
+
+// redactSecrets returns body for the debug log with the value of every secret field replaced, so
+// WithDebug doesn't write signing secrets (Destinations.Create, RevealSecret, RotateSecret, and
+// the source and endpoint secret calls) or ones sent in a request to the log. It runs only when
+// debug logging is on.
+func redactSecrets(body []byte) string {
+	return secretField().ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
+}
 
 type transport struct {
 	apiKey     string
@@ -85,7 +103,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	if t.debug {
 		log.Printf("[hookbase] %s %s", method, u)
 		if bodyBytes != nil {
-			log.Printf("[hookbase] Body: %s", string(bodyBytes))
+			log.Printf("[hookbase] Body: %s", redactSecrets(bodyBytes))
 		}
 	}
 
@@ -109,7 +127,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 		}
 
 		if t.debug {
-			log.Printf("[hookbase] Response %d: %s", res.status, string(res.body))
+			log.Printf("[hookbase] Response %d: %s", res.status, redactSecrets(res.body))
 		}
 
 		if res.status >= 200 && res.status < 300 {
