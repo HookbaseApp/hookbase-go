@@ -24,24 +24,87 @@ import (
 // API as 1.5.0.
 const sdkVersion = "1.14.0"
 
-// credentialField matches a JSON member that carries a credential: its key is exactly secret,
-// token, password, key, Authorization or authorization, or ends in Secret, Token, Password or Key
-// (signingSecret, clientSecret, secretAccessKey, verifyToken, authToken, apiKey, privateKey, and
-// header names such as X-Api-Key), and its value is a string. Keys are matched case-sensitively,
-// as the API names them. Only string values are replaced, so hasSigningSecret (a boolean) and a
-// null secret still show; secretPrefix doesn't match. A few non-secrets such as publicKey and
-// idempotencyKey are redacted too, which is fine for a debug log. The pattern is compiled on
-// first use, so a client without WithDebug never pays for it.
-var credentialField = sync.OnceValue(func() *regexp.Regexp {
-	return regexp.MustCompile(`"(secret|token|password|key|Authorization|authorization|[A-Za-z0-9_-]*(?:Secret|Token|Password|Key))"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
+// jsonString matches one JSON string literal, escapes included.
+const jsonString = `"(?:[^"\\]|\\.)*"`
+
+// redactors are the patterns redactSecrets uses. They are compiled together on first use, so a
+// client without WithDebug never pays for them.
+type redactors struct {
+	// credential matches a JSON member that carries a credential: its key is exactly secret,
+	// token, password, key, Authorization, authorization, headerValue or curlCommand, or ends in
+	// Secret, Token, Password or Key (signingSecret, clientSecret, secretAccessKey, verifyToken,
+	// authToken, apiKey, privateKey, and header names such as X-Api-Key), and its value is a
+	// string. Keys are matched case-sensitively, as the API names them. Only string values are
+	// replaced, so hasSigningSecret (a boolean) and a null secret still show; secretPrefix doesn't
+	// match. A few non-secrets such as publicKey and idempotencyKey are redacted too, which is fine
+	// for a debug log. headerValue is a custom_header destination's auth header; curlCommand
+	// (Events.Debug) repeats the event's inbound headers.
+	credential *regexp.Regexp
+	// headers matches a member that holds HTTP headers (headers, requestHeaders,
+	// responseHeaders, headersOverride, ...) and captures its value: a JSON-encoded string, a
+	// flat object (a destination's {"X-Api-Key": "..."}) or an array of flat objects (an
+	// endpoint's [{"name": "Authorization", "value": "..."}]). A container that nests deeper
+	// doesn't match; the API sends none.
+	headers *regexp.Regexp
+	// headerToken matches each string in a headers container, with the colon after it when it
+	// is a member's key.
+	headerToken *regexp.Regexp
+}
+
+var redaction = sync.OnceValue(func() *redactors {
+	return &redactors{
+		credential: regexp.MustCompile(`"(secret|token|password|key|Authorization|authorization|headerValue|curlCommand|[A-Za-z0-9_-]*(?:Secret|Token|Password|Key))"(\s*:\s*)` + jsonString),
+		headers: regexp.MustCompile(`"(?:headers|headersOverride|[A-Za-z0-9_]*Headers)"\s*:\s*(` +
+			jsonString + `|\{(?:[^{}"]|` + jsonString + `)*\}|\[(?:[^\[\]"]|` + jsonString + `)*\])`),
+		headerToken: regexp.MustCompile(jsonString + `(?:\s*:)?`),
+	}
 })
 
-// redactSecrets returns body for the debug log with the value of every credential field
-// replaced, so WithDebug doesn't write signing secrets (Destinations.Create, RevealSecret,
-// RotateSecret, and the source and endpoint secret calls), API keys, tokens or the credentials
-// sent in a request to the log. It runs only when debug logging is on.
+// redactSecrets returns body for the debug log with credentials replaced, so WithDebug doesn't
+// write signing secrets (Destinations.Create, RevealSecret, RotateSecret, and the source and
+// endpoint secret calls), API keys, tokens, header values or the credentials sent in a request to
+// the log. It runs only when debug logging is on.
+//
+// Every header value is replaced, whatever the header's name, since any custom header can carry
+// a credential: each value of a headers object, each value in a headers array of {name, value}
+// objects (the names stay), and a headers member sent as a JSON-encoded string as a whole.
 func redactSecrets(body []byte) string {
-	return credentialField().ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
+	r := redaction()
+	s := r.credential.ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
+	matches := r.headers.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	last := 0
+	for _, m := range matches {
+		b.WriteString(s[last:m[2]])
+		b.WriteString(redactHeaderValues(r.headerToken, s[m[2]:m[3]]))
+		last = m[3]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// redactHeaderValues replaces every string in a headers container that is not a member's key,
+// except the value of a name member in an array of {name, value} objects. A string container is
+// itself a value, so it is replaced whole.
+func redactHeaderValues(token *regexp.Regexp, container string) string {
+	inArray := strings.HasPrefix(container, "[")
+	prevKey := ""
+	return token.ReplaceAllStringFunc(container, func(tok string) string {
+		if strings.HasSuffix(tok, ":") {
+			prevKey = strings.TrimRight(strings.TrimSuffix(tok, ":"), " \t\r\n")
+			return tok
+		}
+		key := prevKey
+		prevKey = ""
+		if inArray && key == `"name"` {
+			return tok
+		}
+		return `"[REDACTED]"`
+	})
 }
 
 type transport struct {

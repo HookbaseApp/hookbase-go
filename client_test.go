@@ -292,7 +292,8 @@ func TestDebugLogging(t *testing.T) {
 // WithDebug logs request and response bodies, and several of them carry credentials: a
 // destination's signingSecret (Create, RevealSecret, RotateSecret), a source's, an endpoint's
 // secret, an OAuth clientSecret, a new API key, and the auth config and headers a destination
-// sends to its receiver. Their values are redacted, in requests and responses alike.
+// sends to its receiver. Their values are redacted, in requests and responses alike. Every header
+// value is, whatever its name.
 func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	const (
 		sent     = "whsec_sentInTheRequest"
@@ -326,13 +327,13 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	if _, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
 		Name: "d", URL: "https://example.com/hook", AuthType: Ptr(AuthBasic),
 		AuthConfig: map[string]interface{}{"username": "ops", "password": "pw_basic"},
-		Headers:    map[string]string{"Authorization": "Bearer hdr_bearer", "X-Api-Key": "hdr_apikey", "X-Trace": "t1"},
+		Headers:    map[string]string{"Authorization": "Bearer hdr_bearer", "X-Api-Key": "hdr_apikey", "X-Trace": "hdr_trace"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	logged := buf.String()
 	for _, secret := range []string{sent, created, "whsec_previous", "whsec_endpoint", "cs_live",
-		"pw_basic", "hdr_bearer", "hdr_apikey", "whsec_newDestination"} {
+		"pw_basic", "hdr_bearer", "hdr_apikey", "hdr_trace", "whsec_newDestination"} {
 		if strings.Contains(logged, secret) {
 			t.Errorf("debug log contains the secret %q:\n%s", secret, logged)
 		}
@@ -340,10 +341,10 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	for _, want := range []string{
 		`"signingSecret":"[REDACTED]"`, `"signingSecret" : "[REDACTED]"`, `"previousSecret":"[REDACTED]"`,
 		`"secret":"[REDACTED]"`, `"clientSecret":"[REDACTED]"`, `"password":"[REDACTED]"`,
-		`"Authorization":"[REDACTED]"`, `"X-Api-Key":"[REDACTED]"`,
+		`"Authorization":"[REDACTED]"`, `"X-Api-Key":"[REDACTED]"`, `"X-Trace":"[REDACTED]"`,
 		// Not secrets: kept as they are.
 		`"hasSigningSecret":true`, `"secretPrefix":"whsec_ret"`, `"previousSecretExpiresAt":"2026-11-12T00:00:00Z"`,
-		`"name":"n"`, `"username":"ops"`, `"X-Trace":"t1"`,
+		`"name":"n"`, `"username":"ops"`,
 	} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("debug log is missing %s:\n%s", want, logged)
@@ -358,6 +359,123 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	}
 }
 
+// captureLog sends the standard logger's output to a buffer until the test ends.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
+	return &buf
+}
+
+// An endpoint's custom headers travel as [{"name": ..., "value": ...}] pairs, so a credential
+// sits under "value", whatever the header is called. Every value is redacted, in the request and
+// the response, on Create and Update; the header names stay readable.
+func TestDebugLoggingRedactsEndpointHeaderValues(t *testing.T) {
+	echo := map[string]interface{}{"data": map[string]interface{}{
+		"id": "ep_1", "url": "https://example.com/hook",
+		"headers": []map[string]string{
+			{"name": "Authorization", "value": "Bearer ep_resp_bearer"},
+			{"name": "X-Tenant", "value": "ep_resp_tenant"},
+		},
+	}}
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: echo}, cannedResponse{body: echo})
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	created, err := client.Endpoints.Create(context.Background(), "app_1", &CreateEndpointParams{
+		URL: "https://example.com/hook",
+		HeaderList: []EndpointHeader{
+			{Name: "Authorization", Value: "Bearer ep_create_bearer"},
+			{Name: "X-Custom", Value: "ep_create_custom"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Endpoints.Update(context.Background(), "", "ep_1", &UpdateEndpointParams{
+		HeaderList: []EndpointHeader{{Name: "X-Signature", Value: "ep_update_sig"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, value := range []string{"ep_create_bearer", "ep_create_custom", "ep_update_sig", "ep_resp_bearer", "ep_resp_tenant"} {
+		if strings.Contains(out, value) {
+			t.Errorf("debug log contains the header value %q:\n%s", value, out)
+		}
+	}
+	for _, want := range []string{
+		`{"name":"Authorization","value":"[REDACTED]"}`, `{"name":"X-Custom","value":"[REDACTED]"}`,
+		`{"name":"X-Signature","value":"[REDACTED]"}`, `{"name":"X-Tenant","value":"[REDACTED]"}`,
+		`"url":"https://example.com/hook"`, "PATCH " + srv.URL + "/api/webhook-endpoints/ep_1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	// Only the log is redacted: the API gets the values, and so does the caller.
+	reqs := srv.all()
+	if !strings.Contains(string(reqs[0].Body), "ep_create_bearer") || !strings.Contains(string(reqs[1].Body), "ep_update_sig") {
+		t.Errorf("requests must carry the header values: %s / %s", reqs[0].Body, reqs[1].Body)
+	}
+	if len(created.Headers) != 2 || created.Headers[0].Value != "Bearer ep_resp_bearer" {
+		t.Errorf("Create returned headers %+v, want the real values", created.Headers)
+	}
+}
+
+// A destination's headers are a JSON object keyed by header name. Every value is redacted, not
+// only those whose name looks like a credential, in the request and the response, on Create,
+// Update and Get, including headers sent JSON-encoded as a string.
+func TestDebugLoggingRedactsDestinationHeaderValues(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "headers": map[string]string{"X-Tenant": "dst_resp_tenant", "X-Custom-Auth": "dst_resp_auth"},
+		}}},
+		cannedResponse{body: map[string]interface{}{"success": true}},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "headers": `{"X-Tenant":"dst_get_tenant"}`,
+		}}},
+	)
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "d", URL: "https://example.com/hook",
+		Headers: map[string]string{"X-Tenant": "dst_create_tenant", "X-Custom-Auth": "dst_create_auth"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Destinations.Update(context.Background(), "dst_1", &UpdateDestinationParams{
+		Headers: map[string]string{"Cookie": "dst_update_cookie"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, value := range []string{"dst_create_tenant", "dst_create_auth", "dst_update_cookie", "dst_resp_tenant", "dst_resp_auth", "dst_get_tenant"} {
+		if strings.Contains(out, value) {
+			t.Errorf("debug log contains the header value %q:\n%s", value, out)
+		}
+	}
+	for _, want := range []string{
+		`"X-Tenant":"[REDACTED]"`, `"X-Custom-Auth":"[REDACTED]"`, `"Cookie":"[REDACTED]"`, `"headers":"[REDACTED]"`,
+		`"url":"https://example.com/hook"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if got.Headers.Value["X-Tenant"] != "dst_get_tenant" {
+		t.Errorf("Get returned headers %v, want the real values", got.Headers.Value)
+	}
+}
+
 func TestRedactSecrets(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
@@ -369,9 +487,27 @@ func TestRedactSecrets(t *testing.T) {
 		// The suffixes: S3 and OCI credentials, verify and auth tokens, API keys, OAuth secrets.
 		{`{"accessKeyId":"AKIA","secretAccessKey":"z","privateKey":"pk","verifyToken":"vt","authToken":"at","apiKey":"ak","clientSecret":"cs","dbPassword":"dp"}`,
 			`{"accessKeyId":"AKIA","secretAccessKey":"[REDACTED]","privateKey":"[REDACTED]","verifyToken":"[REDACTED]","authToken":"[REDACTED]","apiKey":"[REDACTED]","clientSecret":"[REDACTED]","dbPassword":"[REDACTED]"}`},
-		// Header names, hyphens included.
-		{`{"headers":{"X-Api-Key":"k","X-Auth-Token":"t","X-Trace":"keep"}}`,
-			`{"headers":{"X-Api-Key":"[REDACTED]","X-Auth-Token":"[REDACTED]","X-Trace":"keep"}}`},
+		// Header names as keys, hyphens included.
+		{`{"X-Api-Key":"k","X-Auth-Token":"t","X-Trace":"keep"}`,
+			`{"X-Api-Key":"[REDACTED]","X-Auth-Token":"[REDACTED]","X-Trace":"keep"}`},
+		// Every value of a headers object, whatever the header's name (a destination's headers,
+		// an event's, a delivery's request and response headers, a replay's override).
+		{`{"headers":{"X-Api-Key":"k","X-Trace":"v1","name":"v2","n":3,"e":""}}`,
+			`{"headers":{"X-Api-Key":"[REDACTED]","X-Trace":"[REDACTED]","name":"[REDACTED]","n":3,"e":"[REDACTED]"}}`},
+		{`{"requestHeaders" : { "Cookie" : "c\"q}" }, "responseHeaders":{"Set-Cookie":"s"},"headersOverride":{"X":"o"},"headersOverridden":true}`,
+			`{"requestHeaders" : { "Cookie" : "[REDACTED]" }, "responseHeaders":{"Set-Cookie":"[REDACTED]"},"headersOverride":{"X":"[REDACTED]"},"headersOverridden":true}`},
+		// Every value in a headers array of {name, value} pairs (an endpoint's); the names stay.
+		{`{"headers":[{"name":"Authorization","value":"Bearer b"},{"value":"v]}\"","name":"X-Custom"},{"name":"X","other":"o"},"loose"],"url":"u"}`,
+			`{"headers":[{"name":"Authorization","value":"[REDACTED]"},{"value":"[REDACTED]","name":"X-Custom"},{"name":"X","other":"[REDACTED]"},"[REDACTED]"],"url":"u"}`},
+		{`[{"headers":[]},{"headers":{}},{"headers":null}]`, `[{"headers":[]},{"headers":{}},{"headers":null}]`},
+		// Headers sent as a JSON-encoded string are replaced whole.
+		{`{"headers":"{\"X-Trace\":\"v\"}","responseHeaders":"{}"}`, `{"headers":"[REDACTED]","responseHeaders":"[REDACTED]"}`},
+		// A custom_header destination's auth header value; its name stays.
+		{`{"authConfig":{"headerName":"X-Auth","headerValue":"hv"}}`, `{"authConfig":{"headerName":"X-Auth","headerValue":"[REDACTED]"}}`},
+		// An event's debug curl command repeats its inbound headers.
+		{`{"debug":{"curlCommand":"curl -H \"Authorization: Bearer b\" https://x"}}`, `{"debug":{"curlCommand":"[REDACTED]"}}`},
+		// A key named like a headers member inside a string value is not a member.
+		{`{"note":"\"headers\": {\"X\": \"kept\"}"}`, `{"note":"\"headers\": {\"X\": \"kept\"}"}`},
 		// Over-redacting a non-secret is accepted.
 		{`{"publicKey":"pub","idempotencyKey":"idem"}`, `{"publicKey":"[REDACTED]","idempotencyKey":"[REDACTED]"}`},
 		// Case-sensitive, string values only, whole keys only.
