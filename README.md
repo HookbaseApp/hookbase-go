@@ -428,15 +428,16 @@ Additions:
 - `EventDebugInfo.Deliveries`.
 - `CatalogProvider` on `Source` and `CreateSourceParams`.
 - `WithDebug` redacts credentials in the request and response bodies it logs: the string value
-  of any JSON key named `secret`, `token`, `password`, `key`, `Authorization`, `headerValue` or
-  `curlCommand`, or ending in `Secret`, `Token`, `Password` or `Key` (`signingSecret`,
-  `secretAccessKey`, `verifyToken`, `apiKey`, ...) or in `_token`, `_secret` or `_password`
-  (`auth_token`). It redacts a token in a URL's query string (`?token=`, `&access_token=`, ...),
-  in bodies and in the logged request URL, and leaves the rest of the URL. It also redacts every
-  header value, whatever the header's name: each value of a `headers` object (a destination's,
-  an event's, `requestHeaders`, `responseHeaders`, `headersOverride`), each `value` in an
-  endpoint's `headers` array of `{name, value}` pairs, and headers sent as a JSON-encoded string.
-  Header names stay readable.
+  of any JSON key named `secret`, `token`, `password`, `key`, `Authorization`, `headerValue`,
+  `curlCommand` or `authConfig` (when sent JSON-encoded), or ending in `Secret`, `Token`,
+  `Password` or `Key` (`signingSecret`, `secretAccessKey`, `verifyToken`, `apiKey`, ...) or in
+  `_token`, `_secret` or `_password` (`auth_token`). In URLs, in bodies and in the logged request
+  URL, it redacts the userinfo (`https://[REDACTED]@host`) and a token in the query string or
+  fragment (`?token=`, `&access_token=`, `#auth-token=`, ...), and leaves the rest. It also
+  redacts every header value, whatever the header's name: each value of a `headers` object (a
+  destination's, an event's, `requestHeaders`, `response_headers`, `headersOverride`, ...), each
+  `value` in an endpoint's `headers` array of `{name, value}` pairs, and, whole, headers sent as
+  a JSON-encoded string or nested any deeper. Header names stay readable.
 
 If your code switches on a delivery or message status, add cases for the new ones: a delivery
 that used to read `pending` between retries may now read `awaiting_retry` or `held`.

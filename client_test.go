@@ -551,6 +551,42 @@ func TestDebugLoggingRedactsURLToken(t *testing.T) {
 	}
 }
 
+// Credentials in shapes the API doesn't send today but a user-supplied URL or config can carry:
+// userinfo in the base URL (the request line) and in a URL in a body, a token in a URL fragment,
+// authConfig JSON-encoded as a string, and headers nested deeper than the flat shapes.
+func TestDebugLoggingRedactsUserinfoAndOddShapes(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: `{"destination":{"id":"dst_1",` +
+		`"url":"https://hookuser:dst_userinfoPw@example.com/h#access_token=dst_fragToken",` +
+		`"authConfig":"{\"username\":\"ops\",\"password\":\"dst_authConfigPw\"}",` +
+		`"headers":{"X-Auth":{"value":"dst_nestedHeader"}},"request_headers":[["Cookie","dst_tupleHeader"]]}}`})
+	logged := captureLog(t)
+
+	base := strings.Replace(srv.URL, "http://", "http://basicuser:base_userinfoPw@", 1)
+	dest, err := New("k", WithBaseURL(base), WithDebug(true)).Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := logged.String()
+	for _, secret := range []string{"base_userinfoPw", "basicuser", "dst_userinfoPw", "hookuser", "dst_fragToken",
+		"dst_authConfigPw", "dst_nestedHeader", "dst_tupleHeader"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("debug log contains %q:\n%s", secret, out)
+		}
+	}
+	for _, want := range []string{
+		"GET " + strings.Replace(srv.URL, "http://", "http://[REDACTED]@", 1) + "/api/destinations/dst_1",
+		`"url":"https://[REDACTED]@example.com/h#access_token=[REDACTED]"`,
+		`"authConfig":"[REDACTED]"`, `"headers":"[REDACTED]"`, `"request_headers":"[REDACTED]"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if dest.AuthConfig.Value["password"] != "dst_authConfigPw" || !strings.Contains(dest.URL, "dst_userinfoPw") {
+		t.Errorf("Get returned %+v, want the real values", dest)
+	}
+}
+
 func TestRedactSecrets(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
@@ -587,6 +623,35 @@ func TestRedactSecrets(t *testing.T) {
 			`{"wsUrl":"wss://api.hookbase.app/tunnels/s/ws?tunnelId=t1&token=[REDACTED]","url":"https://x/h?token=[REDACTED]#frag"}`},
 		{`{"url":"https://x/h?a=1\u0026access_token=b\u0026c=2","u":"https://x/h?pageToken=p&tokenType=bearer&token=&mytoken=m"}`,
 			`{"url":"https://x/h?a=1\u0026access_token=[REDACTED]\u0026c=2","u":"https://x/h?pageToken=[REDACTED]&tokenType=bearer&token=&mytoken=m"}`},
+		// Token parameter names with a hyphen, and a token in the fragment (an OAuth implicit
+		// redirect).
+		{`{"a":"https://x/h?auth-token=a&x-token=b&X-Token=c#access_token=d&state=s","b":"https://x/cb#token=e","c":"https://x/h?tokens=f&token-type=g"}`,
+			`{"a":"https://x/h?auth-token=[REDACTED]&x-token=[REDACTED]&X-Token=[REDACTED]#access_token=[REDACTED]&state=s","b":"https://x/cb#token=[REDACTED]","c":"https://x/h?tokens=f&token-type=g"}`},
+		// A URL's userinfo; the scheme, host, path and query stay.
+		{`{"url":"https://user:p%40ss@example.com:8443/h?x=1","git":"ssh://git@github.com/o/r","u":"https://us\u0026er:pw@h/"}`,
+			`{"url":"https://[REDACTED]@example.com:8443/h?x=1","git":"ssh://[REDACTED]@github.com/o/r","u":"https://[REDACTED]@h/"}`},
+		{`{"plain":"https://example.com/a@b","q":"https://example.com/?to=a@b","email":"ops@example.com","bare":"user:pw@host"}`,
+			`{"plain":"https://example.com/a@b","q":"https://example.com/?to=a@b","email":"ops@example.com","bare":"user:pw@host"}`},
+		// authConfig sent JSON-encoded is replaced whole; as an object, member by member.
+		{`{"authConfig":"{\"username\":\"ops\",\"password\":\"pw\"}","b":{"authConfig":{"username":"ops","password":"pw"}}}`,
+			`{"authConfig":"[REDACTED]","b":{"authConfig":{"username":"ops","password":"[REDACTED]"}}}`},
+		// snake_case header containers.
+		{`{"request_headers":{"Cookie":"c"},"response_headers":"{\"a\":\"b\"}","headers_override":{"X":"o"},"has_headers":true}`,
+			`{"request_headers":{"Cookie":"[REDACTED]"},"response_headers":"[REDACTED]","headers_override":{"X":"[REDACTED]"},"has_headers":true}`},
+		// A headers value the flat rules can't read is replaced whole: a nested object, an array of
+		// arrays, an object nested in a pair, a headers key inside one, or one left open.
+		{`{"headers":{"X":{"nested":"v"}},"n":1}`, `{"headers":"[REDACTED]","n":1}`},
+		{`{"headers":[["Authorization","Bearer x"]],"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":[{"name":"A","value":{"v":"x"}}],"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":{"headers":{"a":"b"}},"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":{"X":"v"`, `{"headers":"[REDACTED]"`},
+		{`{"headers":"abc`, `{"headers":"[REDACTED]"`},
+		// Brackets and braces inside strings don't count.
+		{`{"requestHeaders":{"a":"]\"}{["},"x":"y"}`, `{"requestHeaders":{"a":"[REDACTED]"},"x":"y"}`},
+		// After a key whose value is not a string, the next string is not that key's value: an
+		// array element after {"name": null} is redacted.
+		{`{"headers":[{"name":null},"x",{"name":1,"value":"v"},{"name" : "B" , "value" : "w"}]}`,
+			`{"headers":[{"name":null},"[REDACTED]",{"name":1,"value":"[REDACTED]"},{"name" : "B" , "value" : "[REDACTED]"}]}`},
 		// A custom_header destination's auth header value; its name stays.
 		{`{"authConfig":{"headerName":"X-Auth","headerValue":"hv"}}`, `{"authConfig":{"headerName":"X-Auth","headerValue":"[REDACTED]"}}`},
 		// An event's debug curl command repeats its inbound headers.
@@ -608,6 +673,28 @@ func TestRedactSecrets(t *testing.T) {
 		if got := redactSecrets([]byte(tc.in)); got != tc.want {
 			t.Errorf("redactSecrets(%s)\n got %s\nwant %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+// redactHeaderMembers scans each part of a body once, whatever the shape of its headers values.
+// (The other passes are regular expressions, which Go runs in linear time.) On these bodies of up
+// to 440 KB a quadratic scan would run for minutes; a linear one takes well under a second.
+func TestRedactHeaderMembersLargeBodies(t *testing.T) {
+	const n = 20000
+	key := redaction().headersKey
+	for _, tc := range []struct{ name, in, wantPrefix string }{
+		{"unclosed containers", strings.Repeat(`{"headers":[`, n), `{"headers":"[REDACTED]"`},
+		{"non-container values", "{" + strings.Repeat(`"headers":null,`, n) + `"k":"v"}`, `{"headers":null,"headers":null`},
+		{"flat containers", "[" + strings.Repeat(`{"headers":{"a":"b"}},`, n) + "1]", `[{"headers":{"a":"[REDACTED]"}},`},
+		{"deep nesting", `{"headers":` + strings.Repeat("[", n) + strings.Repeat("]", n) + "}", `{"headers":"[REDACTED]"}`},
+		{"unclosed string", `{"headers":"` + strings.Repeat(`\"`, n), `{"headers":"[REDACTED]"`},
+	} {
+		start := time.Now()
+		got := redactHeaderMembers(key, tc.in)
+		if !strings.HasPrefix(got, tc.wantPrefix) {
+			t.Errorf("%s: got prefix %.80s, want %s", tc.name, got, tc.wantPrefix)
+		}
+		t.Logf("%s: %d bytes in %v", tc.name, len(tc.in), time.Since(start))
 	}
 }
 
