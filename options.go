@@ -82,8 +82,8 @@ type requestConfig struct {
 // WithRequestTimeout bounds each attempt of a single request (connecting, sending and reading the
 // whole response) to d. Every retry gets a fresh d; backoff sleeps between attempts are not
 // counted. An attempt that hits the deadline is retried like a network error when the request
-// is retry-safe (not a POST, or a POST with an idempotency key); once retries run out, or for a
-// POST without a key, the request fails with a *TimeoutError.
+// is retry-safe (see WithIdempotencyKey); once retries run out, or for a POST that is not, the
+// request fails with a *TimeoutError.
 //
 // It is applied through the request context, so it cannot extend past the http.Client's own
 // Timeout (WithTimeout, or the Timeout of a client passed to WithHTTPClient), which still applies.
@@ -102,7 +102,15 @@ func WithRequestRetries(n int) RequestOption {
 	}
 }
 
-// WithIdempotencyKey sets an idempotency key for safe retries.
+// WithIdempotencyKey sends key in the Idempotency-Key header.
+//
+// Only sending an event deduplicates on it: POST /api/send-event (Messages.Send, which also puts
+// the key in the body) and POST /v1/events. On those paths a key also makes the POST retry-safe,
+// so it is resent after a 5xx, a network error or a WithRequestTimeout deadline like any other
+// method, and the API answers a repeat with the first result. Every other route ignores the key,
+// so on any other POST (a create, replay, retry, test or secret rotation) the key does not enable
+// those retries: the request might already have run, and resending it could run it twice. Such
+// a POST is still retried on 429, which the API returns before doing any work.
 func WithIdempotencyKey(key string) RequestOption {
 	return func(c *requestConfig) {
 		c.idempotencyKey = key

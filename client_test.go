@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -286,6 +287,414 @@ func TestDebugLogging(t *testing.T) {
 	}
 	if strings.Contains(out, "Bearer") {
 		t.Error("debug log must not include the API key")
+	}
+}
+
+// WithDebug logs request and response bodies, and several of them carry credentials: a
+// destination's signingSecret (Create, RevealSecret, RotateSecret), a source's, an endpoint's
+// secret, an OAuth clientSecret, a new API key, and the auth config and headers a destination
+// sends to its receiver. Their values are redacted, in requests and responses alike. Every header
+// value is, whatever its name.
+func TestDebugLoggingRedactsSecrets(t *testing.T) {
+	const (
+		sent     = "whsec_sentInTheRequest"
+		created  = "whsec_returnedByCreate"
+		previous = "whsec_previous\\\"quoted"
+	)
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{"source": map[string]interface{}{
+			"id": "src_1", "hasSigningSecret": true, "signingSecret": created, "secretPrefix": "whsec_ret",
+		}}},
+		cannedResponse{body: `{"signingSecret" : "` + created + `", "previousSecret":"` + previous + `",` +
+			`"secret":"whsec_endpoint","clientSecret":"cs_live","previousSecretExpiresAt":"2026-11-12T00:00:00Z"}`},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_2", "hasSigningSecret": true, "signingSecret": "whsec_newDestination",
+		}}},
+	)
+
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	defer func() { log.SetOutput(prev); log.SetFlags(flags) }()
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Sources.Create(context.Background(), &CreateSourceParams{Name: "n", Slug: "s", SigningSecret: Ptr(sent)}); err != nil {
+		t.Fatal(err)
+	}
+	revealed, err := client.Destinations.RevealSecret(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "d", URL: "https://example.com/hook", AuthType: Ptr(AuthBasic),
+		AuthConfig: map[string]interface{}{"username": "ops", "password": "pw_basic"},
+		Headers:    map[string]string{"Authorization": "Bearer hdr_bearer", "X-Api-Key": "hdr_apikey", "X-Trace": "hdr_trace"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logged := buf.String()
+	for _, secret := range []string{sent, created, "whsec_previous", "whsec_endpoint", "cs_live",
+		"pw_basic", "hdr_bearer", "hdr_apikey", "hdr_trace", "whsec_newDestination"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("debug log contains the secret %q:\n%s", secret, logged)
+		}
+	}
+	for _, want := range []string{
+		`"signingSecret":"[REDACTED]"`, `"signingSecret" : "[REDACTED]"`, `"previousSecret":"[REDACTED]"`,
+		`"secret":"[REDACTED]"`, `"clientSecret":"[REDACTED]"`, `"password":"[REDACTED]"`,
+		`"Authorization":"[REDACTED]"`, `"X-Api-Key":"[REDACTED]"`, `"X-Trace":"[REDACTED]"`,
+		// Not secrets: kept as they are.
+		`"hasSigningSecret":true`, `"secretPrefix":"whsec_ret"`, `"previousSecretExpiresAt":"2026-11-12T00:00:00Z"`,
+		`"name":"n"`, `"username":"ops"`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, logged)
+		}
+	}
+	// The caller still gets the real values; only the log is redacted.
+	if revealed.SigningSecret != created {
+		t.Errorf("RevealSecret returned %q, want the real secret", revealed.SigningSecret)
+	}
+	if r := srv.all()[0]; !strings.Contains(string(r.Body), sent) {
+		t.Errorf("the request itself must carry the secret, sent %s", r.Body)
+	}
+}
+
+// captureLog sends the standard logger's output to a buffer until the test ends.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
+	return &buf
+}
+
+// An endpoint's custom headers travel as [{"name": ..., "value": ...}] pairs, so a credential
+// sits under "value", whatever the header is called. Every value is redacted, in the request and
+// the response, on Create and Update; the header names stay readable.
+func TestDebugLoggingRedactsEndpointHeaderValues(t *testing.T) {
+	echo := map[string]interface{}{"data": map[string]interface{}{
+		"id": "ep_1", "url": "https://example.com/hook",
+		"headers": []map[string]string{
+			{"name": "Authorization", "value": "Bearer ep_resp_bearer"},
+			{"name": "X-Tenant", "value": "ep_resp_tenant"},
+		},
+	}}
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: echo}, cannedResponse{body: echo})
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	created, err := client.Endpoints.Create(context.Background(), "app_1", &CreateEndpointParams{
+		URL: "https://example.com/hook",
+		HeaderList: []EndpointHeader{
+			{Name: "Authorization", Value: "Bearer ep_create_bearer"},
+			{Name: "X-Custom", Value: "ep_create_custom"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Endpoints.Update(context.Background(), "", "ep_1", &UpdateEndpointParams{
+		HeaderList: []EndpointHeader{{Name: "X-Signature", Value: "ep_update_sig"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, value := range []string{"ep_create_bearer", "ep_create_custom", "ep_update_sig", "ep_resp_bearer", "ep_resp_tenant"} {
+		if strings.Contains(out, value) {
+			t.Errorf("debug log contains the header value %q:\n%s", value, out)
+		}
+	}
+	for _, want := range []string{
+		`{"name":"Authorization","value":"[REDACTED]"}`, `{"name":"X-Custom","value":"[REDACTED]"}`,
+		`{"name":"X-Signature","value":"[REDACTED]"}`, `{"name":"X-Tenant","value":"[REDACTED]"}`,
+		`"url":"https://example.com/hook"`, "PATCH " + srv.URL + "/api/webhook-endpoints/ep_1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	// Only the log is redacted: the API gets the values, and so does the caller.
+	reqs := srv.all()
+	if !strings.Contains(string(reqs[0].Body), "ep_create_bearer") || !strings.Contains(string(reqs[1].Body), "ep_update_sig") {
+		t.Errorf("requests must carry the header values: %s / %s", reqs[0].Body, reqs[1].Body)
+	}
+	if len(created.Headers) != 2 || created.Headers[0].Value != "Bearer ep_resp_bearer" {
+		t.Errorf("Create returned headers %+v, want the real values", created.Headers)
+	}
+}
+
+// A destination's headers are a JSON object keyed by header name. Every value is redacted, not
+// only those whose name looks like a credential, in the request and the response, on Create,
+// Update and Get, including headers sent JSON-encoded as a string.
+func TestDebugLoggingRedactsDestinationHeaderValues(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "headers": map[string]string{"X-Tenant": "dst_resp_tenant", "X-Custom-Auth": "dst_resp_auth"},
+		}}},
+		cannedResponse{body: map[string]interface{}{"success": true}},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "headers": `{"X-Tenant":"dst_get_tenant"}`,
+		}}},
+	)
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "d", URL: "https://example.com/hook",
+		Headers: map[string]string{"X-Tenant": "dst_create_tenant", "X-Custom-Auth": "dst_create_auth"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Destinations.Update(context.Background(), "dst_1", &UpdateDestinationParams{
+		Headers: map[string]string{"Cookie": "dst_update_cookie"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, value := range []string{"dst_create_tenant", "dst_create_auth", "dst_update_cookie", "dst_resp_tenant", "dst_resp_auth", "dst_get_tenant"} {
+		if strings.Contains(out, value) {
+			t.Errorf("debug log contains the header value %q:\n%s", value, out)
+		}
+	}
+	for _, want := range []string{
+		`"X-Tenant":"[REDACTED]"`, `"X-Custom-Auth":"[REDACTED]"`, `"Cookie":"[REDACTED]"`, `"headers":"[REDACTED]"`,
+		`"url":"https://example.com/hook"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if got.Headers.Value["X-Tenant"] != "dst_get_tenant" {
+		t.Errorf("Get returned headers %v, want the real values", got.Headers.Value)
+	}
+}
+
+// Tunnels.Create returns the tunnel's auth token twice: as tunnel.auth_token, a snake_case key,
+// and in the token= query parameter of wsUrl. Neither reaches the debug log; the rest of the URL
+// does, and the caller still gets both.
+func TestDebugLoggingRedactsTunnelToken(t *testing.T) {
+	// Written as the API writes it, with a literal & (Go's encoder would escape it as \u0026).
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: `{"tunnel":{"id":"tun_1","name":"dev",` +
+		`"subdomain":"dev-1","status":"disconnected","auth_token":"whtun_createdSecret"},` +
+		`"tunnelUrl":"https://api.hookbase.app/t/dev-1",` +
+		`"wsUrl":"wss://api.hookbase.app/tunnels/dev-1/ws?tunnelId=tun_1&token=whtun_createdSecret"}`})
+	logged := captureLog(t)
+
+	tunnel, err := New("k", WithBaseURL(srv.URL), WithDebug(true)).Tunnels.Create(context.Background(),
+		&CreateTunnelParams{Name: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := logged.String()
+	if strings.Contains(out, "whtun_createdSecret") {
+		t.Errorf("debug log contains the tunnel token:\n%s", out)
+	}
+	for _, want := range []string{
+		`"auth_token":"[REDACTED]"`,
+		`"wsUrl":"wss://api.hookbase.app/tunnels/dev-1/ws?tunnelId=tun_1&token=[REDACTED]"`,
+		`"tunnelUrl":"https://api.hookbase.app/t/dev-1"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if tunnel.AuthToken == nil || *tunnel.AuthToken != "whtun_createdSecret" ||
+		tunnel.WSURL == nil || !strings.HasSuffix(*tunnel.WSURL, "&token=whtun_createdSecret") {
+		t.Errorf("Create returned AuthToken %v and WSURL %v, want the real token", tunnel.AuthToken, tunnel.WSURL)
+	}
+}
+
+// A token in a URL's query string is redacted wherever the URL appears: a string value in a
+// request body (where Go's encoder writes & as \u0026) or a response body, and the request line.
+func TestDebugLoggingRedactsURLToken(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: `{"data":{"id":"ep_1","url":"https://example.com/hook?token=url_respToken&v=2"}}`},
+		cannedResponse{body: `{}`},
+	)
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Endpoints.Create(context.Background(), "app_1", &CreateEndpointParams{
+		URL: "https://example.com/hook?token=url_reqToken&v=2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.transport.do(context.Background(), "GET", "/api/things", url.Values{"token": {"url_queryToken"}, "page": {"2"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, token := range []string{"url_reqToken", "url_respToken", "url_queryToken"} {
+		if strings.Contains(out, token) {
+			t.Errorf("debug log contains the URL token %q:\n%s", token, out)
+		}
+	}
+	for _, want := range []string{
+		`"url":"https://example.com/hook?token=[REDACTED]\u0026v=2"`,
+		`"url":"https://example.com/hook?token=[REDACTED]&v=2"`,
+		"GET " + srv.URL + "/api/things?page=2&token=[REDACTED]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if r := srv.all()[1]; r.Query.Get("token") != "url_queryToken" {
+		t.Errorf("the request itself must carry the token, sent %v", r.Query)
+	}
+}
+
+// Credentials in shapes the API doesn't send today but a user-supplied URL or config can carry:
+// userinfo in the base URL (the request line) and in a URL in a body, a token in a URL fragment,
+// authConfig JSON-encoded as a string, and headers nested deeper than the flat shapes.
+func TestDebugLoggingRedactsUserinfoAndOddShapes(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: `{"destination":{"id":"dst_1",` +
+		`"url":"https://hookuser:dst_userinfoPw@example.com/h#access_token=dst_fragToken",` +
+		`"authConfig":"{\"username\":\"ops\",\"password\":\"dst_authConfigPw\"}",` +
+		`"headers":{"X-Auth":{"value":"dst_nestedHeader"}},"request_headers":[["Cookie","dst_tupleHeader"]]}}`})
+	logged := captureLog(t)
+
+	base := strings.Replace(srv.URL, "http://", "http://basicuser:base_userinfoPw@", 1)
+	dest, err := New("k", WithBaseURL(base), WithDebug(true)).Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := logged.String()
+	for _, secret := range []string{"base_userinfoPw", "basicuser", "dst_userinfoPw", "hookuser", "dst_fragToken",
+		"dst_authConfigPw", "dst_nestedHeader", "dst_tupleHeader"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("debug log contains %q:\n%s", secret, out)
+		}
+	}
+	for _, want := range []string{
+		"GET " + strings.Replace(srv.URL, "http://", "http://[REDACTED]@", 1) + "/api/destinations/dst_1",
+		`"url":"https://[REDACTED]@example.com/h#access_token=[REDACTED]"`,
+		`"authConfig":"[REDACTED]"`, `"headers":"[REDACTED]"`, `"request_headers":"[REDACTED]"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if dest.AuthConfig.Value["password"] != "dst_authConfigPw" || !strings.Contains(dest.URL, "dst_userinfoPw") {
+		t.Errorf("Get returned %+v, want the real values", dest)
+	}
+}
+
+func TestRedactSecrets(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
+		{`{"a":{"webhookSecret":"x\"y","n":1}}`, `{"a":{"webhookSecret":"[REDACTED]","n":1}}`},
+		{`[{"signingSecret":"a"},{"signingSecret":"b"}]`, `[{"signingSecret":"[REDACTED]"},{"signingSecret":"[REDACTED]"}]`},
+		// The exact names.
+		{`{"token":"t","password":"p","key":"k","Authorization":"Bearer x","authorization":"Basic y"}`,
+			`{"token":"[REDACTED]","password":"[REDACTED]","key":"[REDACTED]","Authorization":"[REDACTED]","authorization":"[REDACTED]"}`},
+		// The suffixes: S3 and OCI credentials, verify and auth tokens, API keys, OAuth secrets.
+		{`{"accessKeyId":"AKIA","secretAccessKey":"z","privateKey":"pk","verifyToken":"vt","authToken":"at","apiKey":"ak","clientSecret":"cs","dbPassword":"dp"}`,
+			`{"accessKeyId":"AKIA","secretAccessKey":"[REDACTED]","privateKey":"[REDACTED]","verifyToken":"[REDACTED]","authToken":"[REDACTED]","apiKey":"[REDACTED]","clientSecret":"[REDACTED]","dbPassword":"[REDACTED]"}`},
+		// Header names as keys, hyphens included.
+		{`{"X-Api-Key":"k","X-Auth-Token":"t","X-Trace":"keep"}`,
+			`{"X-Api-Key":"[REDACTED]","X-Auth-Token":"[REDACTED]","X-Trace":"keep"}`},
+		// Every value of a headers object, whatever the header's name (a destination's headers,
+		// an event's, a delivery's request and response headers, a replay's override).
+		{`{"headers":{"X-Api-Key":"k","X-Trace":"v1","name":"v2","n":3,"e":""}}`,
+			`{"headers":{"X-Api-Key":"[REDACTED]","X-Trace":"[REDACTED]","name":"[REDACTED]","n":3,"e":"[REDACTED]"}}`},
+		{`{"requestHeaders" : { "Cookie" : "c\"q}" }, "responseHeaders":{"Set-Cookie":"s"},"headersOverride":{"X":"o"},"headersOverridden":true}`,
+			`{"requestHeaders" : { "Cookie" : "[REDACTED]" }, "responseHeaders":{"Set-Cookie":"[REDACTED]"},"headersOverride":{"X":"[REDACTED]"},"headersOverridden":true}`},
+		// Every value in a headers array of {name, value} pairs (an endpoint's); the names stay.
+		{`{"headers":[{"name":"Authorization","value":"Bearer b"},{"value":"v]}\"","name":"X-Custom"},{"name":"X","other":"o"},"loose"],"url":"u"}`,
+			`{"headers":[{"name":"Authorization","value":"[REDACTED]"},{"value":"[REDACTED]","name":"X-Custom"},{"name":"X","other":"[REDACTED]"},"[REDACTED]"],"url":"u"}`},
+		{`[{"headers":[]},{"headers":{}},{"headers":null}]`, `[{"headers":[]},{"headers":{}},{"headers":null}]`},
+		// Headers sent as a JSON-encoded string are replaced whole.
+		{`{"headers":"{\"X-Trace\":\"v\"}","responseHeaders":"{}"}`, `{"headers":"[REDACTED]","responseHeaders":"[REDACTED]"}`},
+		// snake_case keys ending in _token, _secret or _password; not _key, which names
+		// non-secrets such as payload_key (an event's object key) and idempotency_key.
+		{`{"tunnel":{"auth_token":"t","access_token":"a","client_secret":"c","http_auth_password":"p","is_session_token":false,"payload_key":"events/e1","idempotency_key":"i"}}`,
+			`{"tunnel":{"auth_token":"[REDACTED]","access_token":"[REDACTED]","client_secret":"[REDACTED]","http_auth_password":"[REDACTED]","is_session_token":false,"payload_key":"events/e1","idempotency_key":"i"}}`},
+		// A token in a URL's query string, after ?, & or & as Go encodes it (\u0026); the rest of
+		// the URL stays.
+		{`{"wsUrl":"wss://api.hookbase.app/tunnels/s/ws?tunnelId=t1&token=tok","url":"https://x/h?token=a#frag"}`,
+			`{"wsUrl":"wss://api.hookbase.app/tunnels/s/ws?tunnelId=t1&token=[REDACTED]","url":"https://x/h?token=[REDACTED]#frag"}`},
+		{`{"url":"https://x/h?a=1\u0026access_token=b\u0026c=2","u":"https://x/h?pageToken=p&tokenType=bearer&token=&mytoken=m"}`,
+			`{"url":"https://x/h?a=1\u0026access_token=[REDACTED]\u0026c=2","u":"https://x/h?pageToken=[REDACTED]&tokenType=bearer&token=&mytoken=m"}`},
+		// Token parameter names with a hyphen, and a token in the fragment (an OAuth implicit
+		// redirect).
+		{`{"a":"https://x/h?auth-token=a&x-token=b&X-Token=c#access_token=d&state=s","b":"https://x/cb#token=e","c":"https://x/h?tokens=f&token-type=g"}`,
+			`{"a":"https://x/h?auth-token=[REDACTED]&x-token=[REDACTED]&X-Token=[REDACTED]#access_token=[REDACTED]&state=s","b":"https://x/cb#token=[REDACTED]","c":"https://x/h?tokens=f&token-type=g"}`},
+		// A URL's userinfo; the scheme, host, path and query stay.
+		{`{"url":"https://user:p%40ss@example.com:8443/h?x=1","git":"ssh://git@github.com/o/r","u":"https://us\u0026er:pw@h/"}`,
+			`{"url":"https://[REDACTED]@example.com:8443/h?x=1","git":"ssh://[REDACTED]@github.com/o/r","u":"https://[REDACTED]@h/"}`},
+		{`{"plain":"https://example.com/a@b","q":"https://example.com/?to=a@b","email":"ops@example.com","bare":"user:pw@host"}`,
+			`{"plain":"https://example.com/a@b","q":"https://example.com/?to=a@b","email":"ops@example.com","bare":"user:pw@host"}`},
+		// authConfig sent JSON-encoded is replaced whole; as an object, member by member.
+		{`{"authConfig":"{\"username\":\"ops\",\"password\":\"pw\"}","b":{"authConfig":{"username":"ops","password":"pw"}}}`,
+			`{"authConfig":"[REDACTED]","b":{"authConfig":{"username":"ops","password":"[REDACTED]"}}}`},
+		// snake_case header containers.
+		{`{"request_headers":{"Cookie":"c"},"response_headers":"{\"a\":\"b\"}","headers_override":{"X":"o"},"has_headers":true}`,
+			`{"request_headers":{"Cookie":"[REDACTED]"},"response_headers":"[REDACTED]","headers_override":{"X":"[REDACTED]"},"has_headers":true}`},
+		// A headers value the flat rules can't read is replaced whole: a nested object, an array of
+		// arrays, an object nested in a pair, a headers key inside one, or one left open.
+		{`{"headers":{"X":{"nested":"v"}},"n":1}`, `{"headers":"[REDACTED]","n":1}`},
+		{`{"headers":[["Authorization","Bearer x"]],"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":[{"name":"A","value":{"v":"x"}}],"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":{"headers":{"a":"b"}},"k":"kept"}`, `{"headers":"[REDACTED]","k":"kept"}`},
+		{`{"headers":{"X":"v"`, `{"headers":"[REDACTED]"`},
+		{`{"headers":"abc`, `{"headers":"[REDACTED]"`},
+		// Brackets and braces inside strings don't count.
+		{`{"requestHeaders":{"a":"]\"}{["},"x":"y"}`, `{"requestHeaders":{"a":"[REDACTED]"},"x":"y"}`},
+		// After a key whose value is not a string, the next string is not that key's value: an
+		// array element after {"name": null} is redacted.
+		{`{"headers":[{"name":null},"x",{"name":1,"value":"v"},{"name" : "B" , "value" : "w"}]}`,
+			`{"headers":[{"name":null},"[REDACTED]",{"name":1,"value":"[REDACTED]"},{"name" : "B" , "value" : "[REDACTED]"}]}`},
+		// A custom_header destination's auth header value; its name stays.
+		{`{"authConfig":{"headerName":"X-Auth","headerValue":"hv"}}`, `{"authConfig":{"headerName":"X-Auth","headerValue":"[REDACTED]"}}`},
+		// An event's debug curl command repeats its inbound headers.
+		{`{"debug":{"curlCommand":"curl -H \"Authorization: Bearer b\" https://x"}}`, `{"debug":{"curlCommand":"[REDACTED]"}}`},
+		// A key named like a headers member inside a string value is not a member.
+		{`{"note":"\"headers\": {\"X\": \"kept\"}"}`, `{"note":"\"headers\": {\"X\": \"kept\"}"}`},
+		// Over-redacting a non-secret is accepted.
+		{`{"publicKey":"pub","idempotencyKey":"idem"}`, `{"publicKey":"[REDACTED]","idempotencyKey":"[REDACTED]"}`},
+		// Case-sensitive, string values only, whole keys only.
+		{`{"Secret":"x","Token":"y","Key":"z"}`, `{"Secret":"[REDACTED]","Token":"[REDACTED]","Key":"[REDACTED]"}`},
+		{`{"SECRET":"x","secrets":"y","Password1":"z","keyPrefix":"whr_ab","tokenType":"Bearer","secretPrefix":"whsec_ab"}`,
+			`{"SECRET":"x","secrets":"y","Password1":"z","keyPrefix":"whr_ab","tokenType":"Bearer","secretPrefix":"whsec_ab"}`},
+		{`{"hasSigningSecret":true,"signingSecret":null,"apiKey":null,"maxKey":3}`, `{"hasSigningSecret":true,"signingSecret":null,"apiKey":null,"maxKey":3}`},
+		// A key name inside a string value is not a key.
+		{`{"note":"the \"secret\": \"kept\""}`, `{"note":"the \"secret\": \"kept\""}`},
+		{`not json`, `not json`},
+		{``, ``},
+	} {
+		if got := redactSecrets([]byte(tc.in)); got != tc.want {
+			t.Errorf("redactSecrets(%s)\n got %s\nwant %s", tc.in, got, tc.want)
+		}
+	}
+}
+
+// redactHeaderMembers scans each part of a body once, whatever the shape of its headers values.
+// (The other passes are regular expressions, which Go runs in linear time.) On these bodies of up
+// to 440 KB a quadratic scan would run for minutes; a linear one takes well under a second.
+func TestRedactHeaderMembersLargeBodies(t *testing.T) {
+	const n = 20000
+	key := redaction().headersKey
+	for _, tc := range []struct{ name, in, wantPrefix string }{
+		{"unclosed containers", strings.Repeat(`{"headers":[`, n), `{"headers":"[REDACTED]"`},
+		{"non-container values", "{" + strings.Repeat(`"headers":null,`, n) + `"k":"v"}`, `{"headers":null,"headers":null`},
+		{"flat containers", "[" + strings.Repeat(`{"headers":{"a":"b"}},`, n) + "1]", `[{"headers":{"a":"[REDACTED]"}},`},
+		{"deep nesting", `{"headers":` + strings.Repeat("[", n) + strings.Repeat("]", n) + "}", `{"headers":"[REDACTED]"}`},
+		{"unclosed string", `{"headers":"` + strings.Repeat(`\"`, n), `{"headers":"[REDACTED]"`},
+	} {
+		start := time.Now()
+		got := redactHeaderMembers(key, tc.in)
+		if !strings.HasPrefix(got, tc.wantPrefix) {
+			t.Errorf("%s: got prefix %.80s, want %s", tc.name, got, tc.wantPrefix)
+		}
+		t.Logf("%s: %d bytes in %v", tc.name, len(tc.in), time.Since(start))
 	}
 }
 

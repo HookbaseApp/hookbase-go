@@ -550,3 +550,577 @@ func TestDestinationsImportValidateOnly(t *testing.T) {
 		t.Errorf("Summary = %+v", res.Summary)
 	}
 }
+
+func TestTransformTypesMatchAPIEngines(t *testing.T) {
+	want := map[TransformType]string{
+		TransformJSONata: "jsonata", TransformJavaScript: "javascript", TransformTypeScript: "typescript",
+		TransformLiquid: "liquid", TransformXSLT: "xslt", TransformJMESPath: "jmespath",
+		TransformJSONLogic: "jsonlogic", TransformJQ: "jq",
+	}
+	for got, s := range want {
+		if string(got) != s {
+			t.Errorf("constant %q != %q", got, s)
+		}
+	}
+}
+
+func TestTransformsEngines(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"engines": []interface{}{
+			map[string]interface{}{
+				"type": "jsonata", "label": "JSONata", "description": "Query and transform JSON",
+				"fileExtension": "jsonata", "starterCode": "{ \"id\": id }", "aiGenerate": true, "available": true,
+			},
+			map[string]interface{}{
+				"type": "jq", "label": "jq", "description": "The jq language",
+				"fileExtension": "jq", "starterCode": ".", "aiGenerate": false, "available": false,
+			},
+		},
+		"contentFormats": []string{"json", "xml", "text"},
+	}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Transforms.Engines(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := srv.only(t); r.Method != "GET" || r.Path != "/api/transforms/engines" {
+		t.Errorf("got %s %s", r.Method, r.Path)
+	}
+	if len(res.Engines) != 2 {
+		t.Fatalf("Engines = %+v", res.Engines)
+	}
+	js, jq := res.Engines[0], res.Engines[1]
+	if js.Type != TransformJSONata || js.Label != "JSONata" || js.FileExtension != "jsonata" ||
+		js.StarterCode == "" || !js.AIGenerate || !js.Available || js.Description == "" {
+		t.Errorf("jsonata engine = %+v", js)
+	}
+	if jq.Type != TransformJQ || jq.AIGenerate || jq.Available {
+		t.Errorf("jq engine = %+v, want unavailable", jq)
+	}
+	if len(res.ContentFormats) != 3 || res.ContentFormats[0] != ContentJSON || res.ContentFormats[2] != ContentText {
+		t.Errorf("ContentFormats = %v", res.ContentFormats)
+	}
+}
+
+// --- Replay with edits ------------------------------------------------------------------------
+
+func replayResponse() cannedResponse {
+	return cannedResponse{body: map[string]interface{}{
+		"deliveryId": "del_9", "message": "Replay queued with modified payload, header overrides",
+		"modified": true, "destinationOverridden": true, "transformOverridden": true,
+		"transformPersisted": true, "headersOverridden": true, "targetDestinationId": "dst_2",
+	}}
+}
+
+func TestDeliveriesReplayWithParamsBody(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		// A merge patch keeps its nulls: null is how it deletes a key.
+		PayloadPatch:        json.RawMessage(`{"order":{"note":null,"total":42}}`),
+		DestinationOverride: Ptr("backup-dest"),
+		TransformOverride:   &TransformOverride{Code: "$", Type: Ptr(TransformJSONata), OutputFormat: Ptr(ContentJSON)},
+		HeadersOverride:     map[string]string{"X-Replay": "1"},
+		PersistTransform:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := srv.only(t)
+	if r.Method != "POST" || r.Path != "/api/deliveries/del_1/replay" {
+		t.Errorf("got %s %s", r.Method, r.Path)
+	}
+	want := `{"payloadPatch":{"order":{"note":null,"total":42}},"destinationOverride":"backup-dest",` +
+		`"transformOverride":{"code":"$","type":"jsonata","outputFormat":"json"},` +
+		`"headersOverride":{"X-Replay":"1"},"persistTransform":true}`
+	if string(r.Body) != want {
+		t.Errorf("body\n got %s\nwant %s", r.Body, want)
+	}
+	if res.DeliveryID != "del_9" || !res.Modified || !res.DestinationOverridden || !res.TransformOverridden ||
+		!res.TransformPersisted || !res.HeadersOverridden || res.TargetDestinationID != "dst_2" {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+// Unset fields are left out, so a replay with only a new payload sends only modifiedPayload; nil
+// params send no body at all, as Replay does.
+func TestDeliveriesReplayWithParamsOmitsUnsetFields(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		ModifiedPayload: map[string]interface{}{"id": "ch_1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Deliveries.Replay(context.Background(), "del_1"); err != nil {
+		t.Fatal(err)
+	}
+	reqs := srv.all()
+	if string(reqs[0].Body) != `{"modifiedPayload":{"id":"ch_1"}}` {
+		t.Errorf("body = %s", reqs[0].Body)
+	}
+	if len(reqs[1].Body) != 0 || len(reqs[2].Body) != 0 {
+		t.Errorf("nil params and Replay should send no body, got %q and %q", reqs[1].Body, reqs[2].Body)
+	}
+}
+
+// The API answers 400 PAYLOAD_EDIT_AMBIGUOUS to both; the SDK refuses before sending anything.
+func TestDeliveriesReplayWithParamsRejectsBothPayloadEdits(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	_, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		ModifiedPayload: map[string]interface{}{"a": 1},
+		PayloadPatch:    map[string]interface{}{"b": 2},
+	})
+	if err == nil {
+		t.Fatal("expected an error when both ModifiedPayload and PayloadPatch are set")
+	}
+	if _, ok := err.(*Error); !ok {
+		t.Errorf("err = %T, want *Error", err)
+	}
+	if n := len(srv.all()); n != 0 {
+		t.Errorf("%d requests sent, want none", n)
+	}
+}
+
+// omitempty drops only a nil interface, so a nil map, slice, pointer or json.RawMessage inside
+// ModifiedPayload or PayloadPatch went out as null: the API replays a null modifiedPayload as the
+// literal body null and answers 400 to a null payloadPatch. A nil or JSON-null edit is not sent,
+// and doesn't count toward the "not both" check.
+func TestDeliveriesReplayWithParamsDropsNilishPayloadEdits(t *testing.T) {
+	var nilMap map[string]interface{}
+	var nilSlice []interface{}
+	var nilPtr *map[string]interface{}
+	nilish := map[string]interface{}{
+		"nil map":           nilMap,
+		"nil slice":         nilSlice,
+		"nil pointer":       nilPtr,
+		"nil RawMessage":    json.RawMessage(nil),
+		"null RawMessage":   json.RawMessage("null"),
+		"spaced null":       json.RawMessage(" null\n"),
+		"pointer to null":   Ptr(json.RawMessage("null")),
+		"pointer to nilmap": &nilMap,
+	}
+	for name, v := range nilish {
+		t.Run(name, func(t *testing.T) {
+			srv := newRecordingServer(t, replayResponse())
+			client := New("test_key", WithBaseURL(srv.URL))
+
+			for _, params := range []*ReplayParams{
+				{ModifiedPayload: v, HeadersOverride: map[string]string{"X-A": "1"}},
+				{PayloadPatch: v, HeadersOverride: map[string]string{"X-A": "1"}},
+			} {
+				if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", params); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The other field set for real: the nil one is not "both".
+			for _, params := range []*ReplayParams{
+				{ModifiedPayload: v, PayloadPatch: map[string]interface{}{"a": nil}},
+				{ModifiedPayload: map[string]interface{}{"a": 1}, PayloadPatch: v},
+			} {
+				if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", params); err != nil {
+					t.Fatalf("a nil-ish edit counted toward both: %v", err)
+				}
+			}
+			reqs := srv.all()
+			want := []string{
+				`{"headersOverride":{"X-A":"1"}}`,
+				`{"headersOverride":{"X-A":"1"}}`,
+				`{"payloadPatch":{"a":null}}`,
+				`{"modifiedPayload":{"a":1}}`,
+			}
+			for i, w := range want {
+				if string(reqs[i].Body) != w {
+					t.Errorf("request %d body = %s, want %s", i, reqs[i].Body, w)
+				}
+			}
+		})
+	}
+}
+
+// Values that are empty but not null still go out: {} and [] are payloads, and a patch that sets
+// a key to null is how a merge patch deletes it.
+func TestDeliveriesReplayWithParamsKeepsEmptyPayloads(t *testing.T) {
+	for _, tc := range []struct {
+		params ReplayParams
+		want   string
+	}{
+		{ReplayParams{ModifiedPayload: map[string]interface{}{}}, `{"modifiedPayload":{}}`},
+		{ReplayParams{ModifiedPayload: []interface{}{}}, `{"modifiedPayload":[]}`},
+		{ReplayParams{ModifiedPayload: json.RawMessage(`""`)}, `{"modifiedPayload":""}`},
+		{ReplayParams{ModifiedPayload: 0}, `{"modifiedPayload":0}`},
+		{ReplayParams{ModifiedPayload: false}, `{"modifiedPayload":false}`},
+		{ReplayParams{PayloadPatch: json.RawMessage(`{"note":null}`)}, `{"payloadPatch":{"note":null}}`},
+	} {
+		b, err := json.Marshal(tc.params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("marshal = %s, want %s", b, tc.want)
+		}
+		// And through a pointer, as ReplayWithParams sends it.
+		p := tc.params
+		if b, _ := json.Marshal(&p); string(b) != tc.want {
+			t.Errorf("marshal via pointer = %s, want %s", b, tc.want)
+		}
+	}
+}
+
+func TestIsNilish(t *testing.T) {
+	var nilMap map[string]int
+	var nilIface interface{}
+	for _, tc := range []struct {
+		v    interface{}
+		want bool
+	}{
+		{nil, true}, {nilMap, true}, {[]int(nil), true}, {(*int)(nil), true},
+		{json.RawMessage(nil), true}, {json.RawMessage("null"), true}, {json.RawMessage("\tnull "), true},
+		{&nilIface, true}, {(func())(nil), true},
+		{map[string]int{}, false}, {[]int{}, false}, {Ptr(0), false}, {0, false}, {"", false},
+		{json.RawMessage("{}"), false}, {json.RawMessage(`"null"`), false}, {[]byte("null"), false},
+	} {
+		if got := isNilish(tc.v); got != tc.want {
+			t.Errorf("isNilish(%#v) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}
+
+// A plain Replay still decodes the response it always did; the new flags read false.
+func TestDeliveriesReplayResultWithoutEdits(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"deliveryId": "del_9", "message": "Replay queued", "modified": false,
+		"destinationOverridden": false, "transformOverridden": false, "transformPersisted": false,
+		"headersOverridden": false, "targetDestinationId": "dst_1",
+	}})
+	res, err := New("test_key", WithBaseURL(srv.URL)).Deliveries.Replay(context.Background(), "del_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeliveryID != "del_9" || res.Modified || res.DestinationOverridden || res.TargetDestinationID != "dst_1" {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+// --- Holds and long retries (0132, 0134) --------------------------------------------------------
+
+// A held delivery's next_retry_at is its deadline: the API sends it as holdExpiresAt and nulls
+// nextRetryAt.
+func TestDeliveriesHeldFields(t *testing.T) {
+	held := deliveryRow()
+	held["status"] = "held"
+	held["holdExpiresAt"] = "2026-11-13T00:00:00Z"
+	waiting := deliveryRow()
+	waiting["status"] = "awaiting_retry"
+	waiting["nextRetryAt"] = "2026-11-12T01:00:00Z"
+	waiting["holdExpiresAt"] = nil
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"deliveries": []interface{}{held, waiting}, "limit": 50, "offset": 0,
+	}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	page, err := client.Deliveries.List(context.Background(), &ListDeliveriesParams{Status: Ptr(DeliveryHeld)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := srv.only(t).Query.Get("status"); q != "held" {
+		t.Errorf("status query = %q", q)
+	}
+	h, w := page.Data[0], page.Data[1]
+	if h.Status != DeliveryHeld || h.HoldExpiresAt == nil || *h.HoldExpiresAt != "2026-11-13T00:00:00Z" || h.NextRetryAt != nil {
+		t.Errorf("held delivery: Status = %q, HoldExpiresAt = %v, NextRetryAt = %v", h.Status, h.HoldExpiresAt, h.NextRetryAt)
+	}
+	if w.Status != DeliveryAwaitingRetry || w.NextRetryAt == nil || w.HoldExpiresAt != nil {
+		t.Errorf("awaiting_retry delivery: Status = %q, NextRetryAt = %v, HoldExpiresAt = %v", w.Status, w.NextRetryAt, w.HoldExpiresAt)
+	}
+}
+
+func TestEventDeliveryInfoHoldExpiresAt(t *testing.T) {
+	var d EventDeliveryInfo
+	if err := json.Unmarshal([]byte(`{"id":"del_1","status":"held","nextRetryAt":null,"holdExpiresAt":"2026-11-13T00:00:00Z"}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.HoldExpiresAt == nil || *d.HoldExpiresAt != "2026-11-13T00:00:00Z" || d.NextRetryAt != nil {
+		t.Errorf("HoldExpiresAt = %v, NextRetryAt = %v", d.HoldExpiresAt, d.NextRetryAt)
+	}
+}
+
+// The debug view's deliveries use their own names (statusCode, durationMs, attempt, error) and add
+// what the API knows about a failure.
+func TestEventsDebugDeliveries(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"event":   map[string]interface{}{"id": "evt_1", "sourceId": "src_1", "receivedAt": "2026-11-11T12:00:00Z"},
+		"request": map[string]interface{}{"headers": map[string]string{}},
+		"payload": map[string]interface{}{"id": "ch_1"},
+		"deliveries": []interface{}{map[string]interface{}{
+			"id": "del_1", "status": "held", "statusCode": 503, "durationMs": 812, "attempt": 3,
+			"maxAttempts": 8, "nextRetryAt": nil, "holdExpiresAt": "2026-11-13T00:00:00Z",
+			"error": "HTTP 503", "responseBody": "unavailable",
+			"responseHeaders":    map[string]string{"retry-after": "120"},
+			"transformedPayload": map[string]interface{}{"total": 42},
+			"routeId":            "rte_1", "destinationId": "dst_1",
+			"destination": map[string]interface{}{"name": "Orders", "url": "https://example.com/hook", "method": "POST"},
+			"startedAt":   "2026-11-11T12:00:01Z", "completedAt": "2026-11-11T12:05:00Z",
+			"failoverIndex": 0, "parentDeliveryId": nil, "fingerprint": "fp_1",
+			"retryAfter": "120", "clusterCount": 4,
+			"patternHints": []interface{}{map[string]interface{}{
+				"id": "http-503", "category": "availability", "title": "Service unavailable",
+				"hypothesis": "The receiver is overloaded", "suggestedFix": "Back off and retry",
+			}},
+			"routeCircuit": map[string]interface{}{
+				"state": "open", "openedAt": "2026-11-11T12:04:00Z", "cooldownSeconds": 300,
+				"failureThreshold": 5, "consecutiveFailures": 5,
+			},
+		}},
+		"debug": map[string]interface{}{"curlCommand": nil},
+	}})
+	info, err := New("test_key", WithBaseURL(srv.URL)).Events.Debug(context.Background(), "evt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Deliveries) != 1 {
+		t.Fatalf("Deliveries = %+v", info.Deliveries)
+	}
+	d := info.Deliveries[0]
+	if d.Status != DeliveryHeld || d.StatusCode == nil || *d.StatusCode != 503 || d.DurationMs == nil ||
+		*d.DurationMs != 812 || d.Attempt != 3 || d.MaxAttempts != 8 || d.NextRetryAt != nil ||
+		d.HoldExpiresAt == nil || d.Error == nil || *d.Error != "HTTP 503" {
+		t.Errorf("delivery = %+v", d)
+	}
+	if d.ResponseHeaders["retry-after"] != "120" || d.RetryAfter == nil || *d.RetryAfter != "120" {
+		t.Errorf("ResponseHeaders = %v, RetryAfter = %v", d.ResponseHeaders, d.RetryAfter)
+	}
+	if d.Destination.Name != "Orders" || d.Destination.Method != "POST" || d.RouteID != "rte_1" {
+		t.Errorf("destination = %+v, RouteID = %q", d.Destination, d.RouteID)
+	}
+	if d.Fingerprint == nil || d.ClusterCount == nil || *d.ClusterCount != 4 || d.CompletedAt == nil {
+		t.Errorf("Fingerprint = %v, ClusterCount = %v, CompletedAt = %v", d.Fingerprint, d.ClusterCount, d.CompletedAt)
+	}
+	if len(d.PatternHints) != 1 || d.PatternHints[0].SuggestedFix != "Back off and retry" {
+		t.Errorf("PatternHints = %+v", d.PatternHints)
+	}
+	if d.RouteCircuit == nil || d.RouteCircuit.State != CircuitOpen || d.RouteCircuit.ConsecutiveFailures != 5 {
+		t.Errorf("RouteCircuit = %+v", d.RouteCircuit)
+	}
+	if p, ok := d.TransformedPayload.(map[string]interface{}); !ok || p["total"] != float64(42) {
+		t.Errorf("TransformedPayload = %#v", d.TransformedPayload)
+	}
+}
+
+// --- Destinations: signing secrets, bridges, dry runs ------------------------------------------
+
+func TestDestinationCreateReturnsSigningSecretOnce(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "name": "Orders", "slug": "orders", "type": "http", "url": "https://example.com/hook",
+			"isActive": true, "hasSigningSecret": true, "signingSecret": "whsec_abc",
+		}}},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "name": "Orders", "slug": "orders", "type": "http", "hasSigningSecret": true,
+		}}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	created, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{Name: "Orders", URL: "https://example.com/hook"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.HasSigningSecret || created.SigningSecret != "whsec_abc" {
+		t.Errorf("HasSigningSecret = %v, SigningSecret = %q", created.HasSigningSecret, created.SigningSecret)
+	}
+	got, err := client.Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasSigningSecret || got.SigningSecret != "" {
+		t.Errorf("Get: HasSigningSecret = %v, SigningSecret = %q, want true and empty", got.HasSigningSecret, got.SigningSecret)
+	}
+}
+
+func TestDestinationRevealAndRotateSecret(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{"signingSecret": "whsec_cur", "previousSecretExpiresAt": nil}},
+		cannedResponse{body: map[string]interface{}{"signingSecret": "whsec_new", "previousSecretExpiresAt": "2026-11-11T13:00:00Z"}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	cur, err := client.Destinations.RevealSecret(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.SigningSecret != "whsec_cur" || cur.PreviousSecretExpiresAt != nil {
+		t.Errorf("reveal = %+v", cur)
+	}
+	rotated, err := client.Destinations.RotateSecret(context.Background(), "dst_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.SigningSecret != "whsec_new" || rotated.PreviousSecretExpiresAt == nil {
+		t.Errorf("rotate = %+v", rotated)
+	}
+	// Zero is a real grace period (end the old secret now), so it has to be sent, not dropped.
+	if _, err := client.Destinations.RotateSecret(context.Background(), "dst_1", Ptr(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	reqs := srv.all()
+	if reqs[0].Method != "GET" || reqs[0].Path != "/api/destinations/dst_1/reveal-secret" {
+		t.Errorf("reveal: %s %s", reqs[0].Method, reqs[0].Path)
+	}
+	for _, r := range reqs[1:] {
+		if r.Method != "POST" || r.Path != "/api/destinations/dst_1/rotate-secret" {
+			t.Errorf("rotate: %s %s", r.Method, r.Path)
+		}
+	}
+	if len(reqs[1].Body) != 0 {
+		t.Errorf("nil grace period should send no body, got %s", reqs[1].Body)
+	}
+	if string(reqs[2].Body) != `{"gracePeriodSeconds":0}` {
+		t.Errorf("body = %s", reqs[2].Body)
+	}
+}
+
+// Rotation is not idempotent, so a 5xx must not be retried into a second rotation.
+func TestDestinationRotateSecretIsNotRetried(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{status: 502, body: map[string]interface{}{"error": "bad gateway"}})
+	client := New("test_key", WithBaseURL(srv.URL), WithMaxRetries(3))
+	if _, err := client.Destinations.RotateSecret(context.Background(), "dst_1", nil); err == nil {
+		t.Fatal("expected an error")
+	}
+	if n := len(srv.all()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
+	}
+}
+
+func TestDestinationCreateBridgeBody(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+		"id": "dst_b", "name": "Bridge", "slug": "bridge", "type": "bridge", "url": "",
+		"config":           map[string]interface{}{"eventTypeSource": "field", "eventTypeField": "type", "eventTypePrefix": "stripe.", "applicationId": nil},
+		"hasSigningSecret": false, "signingSecret": nil,
+	}}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	dest, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "Bridge",
+		Type: Ptr(DestinationBridge),
+		Config: BridgeConfig{
+			EventTypeSource: BridgeEventTypeField,
+			EventTypeField:  "type",
+			EventTypePrefix: "stripe.",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"name":"Bridge","slug":"bridge","type":"bridge",` +
+		`"config":{"eventTypeSource":"field","eventTypeField":"type","eventTypePrefix":"stripe."}}`
+	if got := string(srv.only(t).Body); got != want {
+		t.Errorf("body\n got %s\nwant %s", got, want)
+	}
+	if dest.Type != DestinationBridge || dest.HasSigningSecret || dest.SigningSecret != "" {
+		t.Errorf("destination = %+v", dest)
+	}
+	var cfg BridgeConfig
+	if err := json.Unmarshal(dest.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EventTypeSource != BridgeEventTypeField || cfg.EventTypeField != "type" || cfg.EventTypePrefix != "stripe." || cfg.ApplicationID != nil {
+		t.Errorf("config = %+v", cfg)
+	}
+
+	// A fixed bridge sends eventType and none of the field-only keys.
+	b, err := json.Marshal(BridgeConfig{EventTypeSource: BridgeEventTypeFixed, EventType: "order.created", ApplicationID: Ptr("app_1"), AllowUnverifiedSources: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"eventTypeSource":"fixed","eventType":"order.created","applicationId":"app_1","allowUnverifiedSources":true}` {
+		t.Errorf("fixed config = %s", b)
+	}
+}
+
+func TestDestinationTestWithParamsBridgeDryRun(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{
+			"success": true, "dryRun": true, "eventType": "stripe.charge.succeeded",
+			"eventTypeExists": true, "matchingEndpoints": 2,
+		}},
+		cannedResponse{body: map[string]interface{}{
+			"success": false, "dryRun": true, "eventType": nil, "eventTypeExists": false,
+			"matchingEndpoints": 0, "error": "Payload field 'type' is missing",
+		}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Destinations.TestWithParams(context.Background(), "dst_b", &TestDestinationParams{
+		Payload: map[string]interface{}{"type": "charge.succeeded"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || !res.DryRun || res.EventType == nil || *res.EventType != "stripe.charge.succeeded" ||
+		!res.EventTypeExists || res.MatchingEndpoints != 2 || res.StatusCode != 0 {
+		t.Errorf("dry run = %+v", res)
+	}
+	res, err = client.Destinations.Test(context.Background(), "dst_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success || !res.DryRun || res.EventType != nil || res.Error == "" {
+		t.Errorf("unresolved dry run = %+v", res)
+	}
+
+	reqs := srv.all()
+	if reqs[0].Path != "/api/destinations/dst_b/test" || string(reqs[0].Body) != `{"payload":{"type":"charge.succeeded"}}` {
+		t.Errorf("TestWithParams sent %s %s", reqs[0].Path, reqs[0].Body)
+	}
+	if len(reqs[1].Body) != 0 {
+		t.Errorf("Test should send no body, got %s", reqs[1].Body)
+	}
+}
+
+// An empty, non-nil Payload is sent as {}, so a bridge dry run can test an empty object; a nil one
+// is still left out.
+func TestTestDestinationParamsPayload(t *testing.T) {
+	for _, tc := range []struct {
+		params TestDestinationParams
+		want   string
+	}{
+		{TestDestinationParams{}, `{}`},
+		{TestDestinationParams{Payload: map[string]interface{}{}}, `{"payload":{}}`},
+		{TestDestinationParams{Payload: map[string]interface{}{"type": "a"}}, `{"payload":{"type":"a"}}`},
+	} {
+		b, err := json.Marshal(tc.params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("marshal = %s, want %s", b, tc.want)
+		}
+	}
+
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{"success": false, "dryRun": true}})
+	if _, err := New("test_key", WithBaseURL(srv.URL)).Destinations.TestWithParams(context.Background(), "dst_b",
+		&TestDestinationParams{Payload: map[string]interface{}{}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := srv.only(t); string(r.Body) != `{"payload":{}}` {
+		t.Errorf("TestWithParams sent %s, want {\"payload\":{}}", r.Body)
+	}
+}
+
+func TestDestinationTypeAndMethodConstants(t *testing.T) {
+	if DestinationBridge != "bridge" || BridgeEventTypeFixed != "fixed" || BridgeEventTypeField != "field" {
+		t.Error("bridge constants do not match the API")
+	}
+	if DeliveryAwaitingRetry != "awaiting_retry" || DeliveryHeld != "held" || MessageHeld != "held" {
+		t.Error("hold status constants do not match the API")
+	}
+}

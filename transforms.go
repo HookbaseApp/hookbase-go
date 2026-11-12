@@ -15,8 +15,16 @@ const (
 	TransformXSLT       TransformType = "xslt"
 	TransformLiquid     TransformType = "liquid"
 
+	// TransformTypeScript is JavaScript with type annotations; types are stripped, not checked.
+	TransformTypeScript TransformType = "typescript"
+	TransformJMESPath   TransformType = "jmespath"
+	TransformJSONLogic  TransformType = "jsonlogic"
+	// TransformJQ needs transform isolation on the server. Without it the API answers
+	// TRANSFORM_ENGINE_UNAVAILABLE.
+	TransformJQ TransformType = "jq"
+
 	// Deprecated: the API has no "mapping" transform type and rejects it with a 400. Use one of
-	// the four engines above.
+	// the engines above.
 	TransformMapping TransformType = "mapping"
 )
 
@@ -147,6 +155,29 @@ type TransformTestResult struct {
 	ExecutionTimeMs *int `json:"-"`
 }
 
+// TransformEngine is one transform language the API supports, as GET /api/transforms/engines
+// lists it.
+type TransformEngine struct {
+	Type          TransformType `json:"type"`
+	Label         string        `json:"label"`
+	Description   string        `json:"description"`
+	FileExtension string        `json:"fileExtension"`
+	// StarterCode is a working example in this language, for an editor to start from.
+	StarterCode string `json:"starterCode"`
+	// AIGenerate reports whether the dashboard's AI assistant can write code in this language.
+	AIGenerate bool `json:"aiGenerate"`
+	// Available is false when the language needs transform isolation and this deployment has it
+	// off. Creating or testing a transform in it then fails with TRANSFORM_ENGINE_UNAVAILABLE.
+	Available bool `json:"available"`
+}
+
+// TransformEnginesResponse is what Engines returns: the transform languages and the content
+// formats a transform's input and output can use.
+type TransformEnginesResponse struct {
+	Engines        []TransformEngine `json:"engines"`
+	ContentFormats []ContentFormat   `json:"contentFormats"`
+}
+
 // TransformsResource provides access to transform-related API endpoints.
 type TransformsResource struct {
 	t *transport
@@ -215,6 +246,16 @@ func (r *TransformsResource) Delete(ctx context.Context, id string, opts ...Requ
 func (r *TransformsResource) Test(ctx context.Context, params *TransformTestParams, opts ...RequestOption) (*TransformTestResult, error) {
 	var resp TransformTestResult
 	if err := r.t.do(ctx, "POST", "/api/transforms/test", nil, params, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Engines lists the transform languages this deployment supports, with starter code for each and
+// whether it is available. Use it to offer only the languages the API will accept.
+func (r *TransformsResource) Engines(ctx context.Context, opts ...RequestOption) (*TransformEnginesResponse, error) {
+	var resp TransformEnginesResponse
+	if err := r.t.do(ctx, "GET", "/api/transforms/engines", nil, nil, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -1,7 +1,9 @@
 package hookbase
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"strconv"
 )
 
@@ -16,6 +18,32 @@ func btoa(b bool) string {
 // Ptr returns a pointer to the given value. Useful for setting optional fields.
 func Ptr[T any](v T) *T {
 	return &v
+}
+
+// isNilish reports whether v would go out as JSON null: a nil interface, a nil map, slice,
+// pointer, func or channel (through any number of pointers), or a json.RawMessage that holds
+// null. `omitempty` drops only the first of these from an interface{} field.
+func isNilish(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return true
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		if rv.IsNil() {
+			return true
+		}
+	}
+	if rv.Type() == reflect.TypeOf(json.RawMessage(nil)) {
+		return bytes.Equal(bytes.TrimSpace(rv.Bytes()), []byte("null"))
+	}
+	return false
 }
 
 // FlexBool handles JSON booleans that may arrive as integers (0/1) from D1/SQLite.

@@ -247,6 +247,16 @@ type Endpoint struct {
 	IPAllowlistNotes *string `json:"ipAllowlistNotes"`
 	// UseStaticIP reports whether deliveries go through the dedicated static-IP proxy.
 	UseStaticIP FlexBool `json:"useStaticIp"`
+	// HoldOnCircuitOpen reports whether messages wait while the endpoint's circuit breaker is open
+	// (MessageHeld) and are sent once it recovers. When it is false, a message is dead-lettered as
+	// soon as it meets the open circuit. The API defaults it to true. FIFO and polling endpoints
+	// never hold.
+	HoldOnCircuitOpen bool `json:"holdOnCircuitOpen"`
+	// HeldCount is the number of messages held for this endpoint, counted up to 10,000, and
+	// HeldCountCapped is true when there are more. Only Get sets them; List, Create and Update
+	// leave them zero.
+	HeldCount       int  `json:"heldCount"`
+	HeldCountCapped bool `json:"heldCountCapped"`
 
 	// The fields below name response keys the API has never sent. They decoded to the zero value
 	// on every version of this SDK that declared them, so reading one has always told you nothing
@@ -335,6 +345,10 @@ type CreateEndpointParams struct {
 	CircuitSuccessThreshold *int `json:"circuitSuccessThreshold,omitempty"`
 	// CircuitCooldownSeconds is how long an open circuit waits before retrying, 10 to 3600.
 	CircuitCooldownSeconds *int `json:"circuitCooldownSeconds,omitempty"`
+	// HoldOnCircuitOpen holds messages while the circuit breaker is open, to be sent once it
+	// recovers. False dead-letters a message as soon as it meets the open circuit. Nil uses the
+	// API's default, true.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 	// SignatureScheme picks how deliveries are signed. The API defaults to
 	// SignatureSchemeHMACSHA256. With SignatureSchemeEd25519 Hookbase generates the key pair and the
 	// response carries only Endpoint.PublicKey, with no Secret.
@@ -443,6 +457,9 @@ type UpdateEndpointParams struct {
 	CircuitFailureThreshold *int    `json:"circuitFailureThreshold,omitempty"`
 	CircuitSuccessThreshold *int    `json:"circuitSuccessThreshold,omitempty"`
 	CircuitCooldownSeconds  *int    `json:"circuitCooldownSeconds,omitempty"`
+	// HoldOnCircuitOpen turns holding messages while the circuit breaker is open on or off. With
+	// it off, a message is dead-lettered as soon as it meets the open circuit.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 	// SignatureScheme switches the signing scheme. Switching generates a fresh key of the new kind
 	// and ends any rotation grace period, since a receiver cannot verify across schemes.
 	SignatureScheme *SignatureScheme `json:"signatureScheme,omitempty"`
@@ -710,8 +727,8 @@ func (r *EndpointsResource) RotateSecret(ctx context.Context, applicationID, end
 // RotateSecretWithParams rotates the signing secret for an endpoint.
 //
 // It is not retried after a server error or a lost connection, since a second rotation would
-// replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
-// retries, and the API does not deduplicate rotations.
+// replace the secret the first one returned. The API does not deduplicate rotations, so
+// WithIdempotencyKey doesn't change this.
 func (r *EndpointsResource) RotateSecretWithParams(ctx context.Context, applicationID, endpointID string, params *RotateSecretParams, opts ...RequestOption) (*RotateSecretResult, error) {
 	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
 		return nil, err
@@ -838,8 +855,8 @@ type EndpointTestResult struct {
 }
 
 // TestWithParams sends a test event to an endpoint, with an optional event type and payload, and
-// returns the delivery outcome. Like every POST without an idempotency key it is not retried after
-// a server error, so the test is not delivered twice.
+// returns the delivery outcome. Like every POST but sending an event it is not retried after a
+// server error, with or without WithIdempotencyKey, so the test is not delivered twice.
 func (r *EndpointsResource) TestWithParams(ctx context.Context, applicationID, endpointID string, params *TestEndpointParams, opts ...RequestOption) (*EndpointTestResult, error) {
 	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
 		return nil, err

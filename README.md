@@ -61,7 +61,7 @@ client := hookbase.New("your_api_key",
 | `client.Routes` | Routing rules connecting sources to destinations |
 | `client.Events` | Received webhook events |
 | `client.Deliveries` | Delivery attempts and replays |
-| `client.Transforms` | Payload transformations (JSONata, JavaScript, Liquid, XSLT) |
+| `client.Transforms` | Payload transformations (JSONata, JavaScript, TypeScript, Liquid, XSLT, JMESPath, JSONLogic, jq). `Engines` lists the languages this deployment supports |
 | `client.Filters` | Conditional routing filters |
 | `client.Schemas` | JSON Schema validation |
 | `client.APIKeys` | API key management (List, Get, Delete; Create and RotateSecret need a dashboard session, not an API key) |
@@ -166,6 +166,74 @@ goes back as `ListEventsParams.Cursor`. Deliveries page by `Offset`; advance it 
 result, err := client.Deliveries.Replay(ctx, "del_abc123")
 ```
 
+`ReplayWithParams` replays with edits: a changed payload, another destination, a one-off
+transform or extra headers. `PayloadPatch` is an RFC 7386 merge patch on the stored payload (a
+`null` value removes the key), which suits sources that mask or encrypt fields. Set it or
+`ModifiedPayload`, not both:
+
+```go
+result, err := client.Deliveries.ReplayWithParams(ctx, "del_abc123", &hookbase.ReplayParams{
+    PayloadPatch:        json.RawMessage(`{"order":{"note":null}}`),
+    DestinationOverride: hookbase.Ptr("backup-endpoint"), // ID or slug
+    HeadersOverride:     map[string]string{"X-Replay": "1"},
+})
+fmt.Println(result.DeliveryID, result.Modified, result.TargetDestinationID)
+```
+
+### Destination Signing Secrets
+
+Every HTTP destination signs its deliveries with a `whsec_` secret, in the same Standard Webhooks
+format outbound endpoints use, so the receiver can verify them with `hookbase.NewWebhook`. `Create`
+returns the secret once in `Destination.SigningSecret`; after that, read it with `RevealSecret`.
+`RotateSecret` issues a new one, and the old one keeps signing alongside it for the grace period
+(nil means the API's default of an hour):
+
+```go
+secret, err := client.Destinations.RevealSecret(ctx, "dst_123")
+rotated, err := client.Destinations.RotateSecret(ctx, "dst_123", hookbase.Ptr(600))
+```
+
+### Bridge Destinations
+
+A bridge destination publishes each inbound delivery as an outbound event, sent to the endpoints
+subscribed to its event type. The event type is fixed, or read from a payload field. `Test` on a
+bridge is a dry run: it publishes nothing and reports the event type and how many endpoints would
+get it.
+
+```go
+bridge, err := client.Destinations.Create(ctx, &hookbase.CreateDestinationParams{
+    Name: "Stripe to customers",
+    Type: hookbase.Ptr(hookbase.DestinationBridge),
+    Config: hookbase.BridgeConfig{
+        EventTypeSource: hookbase.BridgeEventTypeField,
+        EventTypeField:  "type",
+        EventTypePrefix: "stripe.",
+    },
+})
+dry, err := client.Destinations.TestWithParams(ctx, bridge.ID, &hookbase.TestDestinationParams{
+    Payload: map[string]interface{}{"type": "charge.succeeded"},
+})
+if dry.EventType == nil {
+    // The event type could not be resolved from the payload; dry.Error says why.
+    fmt.Println("no event type:", dry.Error)
+} else {
+    fmt.Println(*dry.EventType, dry.EventTypeExists, dry.MatchingEndpoints)
+}
+```
+
+### Holds While a Circuit Is Open
+
+While a route's or an endpoint's circuit breaker is open, its deliveries are held
+(`DeliveryHeld`, `MessageHeld`) and sent once it recovers. A held delivery has `HoldExpiresAt` set
+instead of `NextRetryAt`; one still held then is dead-lettered. Turn holds off per route or
+endpoint with `HoldOnCircuitOpen: hookbase.Ptr(false)`: a delivery is then dead-lettered as soon as
+it meets the open circuit. `Routes.Get` and `Endpoints.Get` report `HeldCount` (capped at 10,000,
+with `HeldCountCapped`).
+
+A failed delivery whose next retry is more than a minute away is `DeliveryAwaitingRetry`. Listing
+deliveries with `Status: hookbase.Ptr(hookbase.DeliveryPending)` also returns awaiting-retry and
+held deliveries.
+
 ### Bulk Replay
 
 ```go
@@ -226,8 +294,8 @@ err := client.Sources.Update(ctx, "src_123", params,
     hookbase.WithRequestRetries(0),               // don't retry this call
 )
 
-source, err := client.Sources.Create(ctx, createParams,
-    hookbase.WithIdempotencyKey("unique-key-123"), // lets this POST be retried on 5xx
+result, err := client.Messages.Send(ctx, "app_123", sendParams,
+    hookbase.WithIdempotencyKey("order-123-created"), // the API deduplicates sends on this key
 )
 ```
 
@@ -238,8 +306,11 @@ source, err := client.Sources.Create(ctx, createParams,
   `http.Client` timeout (`WithTimeout`, or your own client's `Timeout`). To cap the whole call,
   retries included, put a deadline on `ctx`.
 - `WithRequestRetries(n)` overrides `WithMaxRetries` for one call.
-- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. On a `POST` it also makes the request
-  eligible for retry after a 5xx or network error (see [Retry Behavior](#retry-behavior)).
+- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. The API deduplicates on it only when
+  sending an event (`POST /api/send-event`, which `Messages.Send` uses, and `POST /v1/events`), and
+  only there does the key make a `POST` eligible for retry after a 5xx or network error. On any
+  other `POST` (a create, replay, test or secret rotation) the key is ignored and does not enable
+  those retries (see [Retry Behavior](#retry-behavior)).
 
 ### Optional Fields
 
@@ -320,19 +391,56 @@ if err != nil {
 | Outcome | Retried? |
 |---------|----------|
 | 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid). A `Retry-After` over 60s is returned as a `*RateLimitError` at once instead of being waited out |
-| 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
+| 5xx | Yes, with exponential backoff, except a `POST` (one that sends an event with an idempotency key is retried) |
 | Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
 | Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
 | `WithRequestTimeout` deadline hit on one attempt | Same as 5xx; `*TimeoutError` once retries run out |
 | `ctx` cancelled or past its deadline | No, returns `*TimeoutError` (`errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` work) |
 
-- A `POST` is retried after a 5xx or network error only when it carries an idempotency key
-  (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
-  a duplicate.
+- A `POST` is retried after a 5xx or network error only when it sends an event with an
+  idempotency key (`Messages.Send` always carries one), since the API deduplicates on the key
+  only there. Other `POST`s are retried on 429 only, with or without `WithIdempotencyKey`, so a
+  retry never creates a duplicate or rotates a secret twice.
 - Default: 3 retries (4 attempts in total); a negative count is treated as 0. Backoff is 1s, 2s,
   4s, ... capped at 10s, plus up to 1s of random jitter.
 - Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
   `*TimeoutError`.
+
+## What's New in 1.14.0
+
+No signature or existing field changed. One behaviour change: `WithIdempotencyKey` no longer
+makes every `POST` retry-safe. Only sending an event (`Messages.Send`, `POST /v1/events`) is
+retried after a 5xx, network error or `WithRequestTimeout` deadline because of a key, since the
+API deduplicates on the key nowhere else. Before, a key passed to `Endpoints.RotateSecret`,
+`Destinations.RotateSecret`, a replay, a test or a create let a retry run the call twice. Those
+calls are now sent once (a 429 is still retried). The `Idempotency-Key` header is still sent.
+
+Additions:
+
+- `Transforms.Engines`.
+- `Deliveries.ReplayWithParams` and `ReplayParams`; `ReplayResult` reports which edits applied.
+- Destinations: `RevealSecret`, `RotateSecret`, `TestWithParams`, `HasSigningSecret` and
+  `SigningSecret`, the `bridge` type with `BridgeConfig`, and the dry-run fields on
+  `DestinationTestResult`. A destination's `Method` may also be GET or DELETE.
+- Holds: `DeliveryHeld`, `DeliveryAwaitingRetry`, `MessageHeld`, `HoldExpiresAt`,
+  `HoldOnCircuitOpen`, `HeldCount`, `SendMessageResponse.MessagesHeld`, `OutboundStatsSummary.Held`,
+  and `OutboundMessage.Bridge`.
+- `EventDebugInfo.Deliveries`.
+- `CatalogProvider` on `Source` and `CreateSourceParams`.
+- `WithDebug` redacts credentials in the request and response bodies it logs: the string value
+  of any JSON key named `secret`, `token`, `password`, `key`, `Authorization`, `headerValue`,
+  `curlCommand` or `authConfig` (when sent JSON-encoded), or ending in `Secret`, `Token`,
+  `Password` or `Key` (`signingSecret`, `secretAccessKey`, `verifyToken`, `apiKey`, ...) or in
+  `_token`, `_secret` or `_password` (`auth_token`). In URLs, in bodies and in the logged request
+  URL, it redacts the userinfo (`https://[REDACTED]@host`) and a token in the query string or
+  fragment (`?token=`, `&access_token=`, `#auth-token=`, ...), and leaves the rest. It also
+  redacts every header value, whatever the header's name: each value of a `headers` object (a
+  destination's, an event's, `requestHeaders`, `response_headers`, `headersOverride`, ...), each
+  `value` in an endpoint's `headers` array of `{name, value}` pairs, and, whole, headers sent as
+  a JSON-encoded string or nested any deeper. Header names stay readable.
+
+If your code switches on a delivery or message status, add cases for the new ones: a delivery
+that used to read `pending` between retries may now read `awaiting_retry` or `held`.
 
 ## License
 

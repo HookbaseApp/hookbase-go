@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -453,7 +454,165 @@ func TestUserAgentVersion(t *testing.T) {
 
 	client := New("test_key", WithBaseURL(server.URL))
 	_ = client.Sources.Delete(context.Background(), "src_1")
-	if ua != "hookbase-go/1.13.0" {
+	if ua != "hookbase-go/1.14.0" {
 		t.Errorf("unexpected User-Agent %q", ua)
+	}
+}
+
+// The API deduplicates on Idempotency-Key only when sending an event. On any other POST the key
+// is ignored, so it must not make the request retry-safe: a rotation, replay, test or create
+// resent after a 5xx could run twice (a second rotation loses the secret the first returned).
+func TestIdempotencyKeyDoesNotMakeOtherPostsRetrySafe(t *testing.T) {
+	ctx := context.Background()
+	key := WithIdempotencyKey("idem-1")
+	calls := map[string]func(c *Client) error{
+		"Endpoints.RotateSecret": func(c *Client) error {
+			_, err := c.Endpoints.RotateSecret(ctx, "", "ep_1", key)
+			return err
+		},
+		"Destinations.RotateSecret": func(c *Client) error {
+			_, err := c.Destinations.RotateSecret(ctx, "dst_1", nil, key)
+			return err
+		},
+		"Deliveries.Replay": func(c *Client) error {
+			_, err := c.Deliveries.Replay(ctx, "dlv_1", key)
+			return err
+		},
+		"Endpoints.Test": func(c *Client) error {
+			_, err := c.Endpoints.Test(ctx, "", "ep_1", key)
+			return err
+		},
+		"Sources.Create": func(c *Client) error {
+			_, err := c.Sources.Create(ctx, &CreateSourceParams{Name: "x", Slug: "x"}, key)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			var attempts int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&attempts, 1)
+				if r.Method != "POST" || r.Header.Get("Idempotency-Key") != "idem-1" {
+					t.Errorf("got %s with Idempotency-Key %q, want a POST carrying the key", r.Method, r.Header.Get("Idempotency-Key"))
+				}
+				w.WriteHeader(503)
+				json.NewEncoder(w).Encode(map[string]interface{}{"error": "unavailable"})
+			}))
+			defer server.Close()
+
+			err := call(New("test_key", WithBaseURL(server.URL), WithMaxRetries(3)))
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != 503 {
+				t.Fatalf("expected 503 APIError, got %T: %v", err, err)
+			}
+			if n := atomic.LoadInt32(&attempts); n != 1 {
+				t.Errorf("expected exactly 1 attempt, got %d", n)
+			}
+		})
+	}
+}
+
+// Nor does the key make such a POST retry-safe after a dropped connection or a per-attempt
+// deadline: the server may have acted on it either way.
+func TestIdempotencyKeyDoesNotMakeOtherPostsRetrySafeOnNetworkError(t *testing.T) {
+	var dropped int32
+	dropping := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dropped, 1)
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			conn.Close()
+		}
+	}))
+	defer dropping.Close()
+	client := New("test_key", WithBaseURL(dropping.URL), WithMaxRetries(3))
+	_, err := client.Endpoints.RotateSecret(context.Background(), "", "ep_1", WithIdempotencyKey("idem-1"))
+	var netErr *NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+	}
+	if n := atomic.LoadInt32(&dropped); n != 1 {
+		t.Errorf("dropped connection: expected 1 attempt, got %d", n)
+	}
+
+	var hung int32
+	hanging := hangingServer(&hung)
+	defer hanging.Close()
+	client = New("test_key", WithBaseURL(hanging.URL), WithMaxRetries(3))
+	_, err = client.Sources.Create(context.Background(), &CreateSourceParams{Name: "x", Slug: "x"},
+		WithIdempotencyKey("idem-2"), WithRequestTimeout(100*time.Millisecond))
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected *TimeoutError, got %T: %v", err, err)
+	}
+	if n := atomic.LoadInt32(&hung); n != 1 {
+		t.Errorf("per-attempt deadline: expected 1 attempt, got %d", n)
+	}
+}
+
+// Sending an event is deduplicated on the key, so it is still retried after a 5xx, with the key
+// the caller gave, and so is a POST to /v1/events.
+func TestSendEventWithKeyStillRetriedOn503(t *testing.T) {
+	var attempts int32
+	var mu sync.Mutex
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&attempts, 1)
+		mu.Lock()
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(503)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "unavailable"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"messageId": "msg_1", "eventId": "evt_1"})
+	}))
+	defer server.Close()
+
+	client := New("test_key", WithBaseURL(server.URL), WithMaxRetries(3))
+	if _, err := client.Messages.Send(context.Background(), "app_1", &SendMessageParams{EventType: "order.created"},
+		WithIdempotencyKey("order-42")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mu.Lock()
+	got := append([]string(nil), keys...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "order-42" || got[1] != "order-42" {
+		t.Errorf("expected 2 attempts with key order-42, got %v", got)
+	}
+
+	atomic.StoreInt32(&attempts, 0)
+	if err := client.transport.do(context.Background(), "POST", "/v1/events", nil, map[string]string{"type": "a.b"}, nil,
+		WithIdempotencyKey("v1-key")); err != nil {
+		t.Fatalf("/v1/events: unexpected error: %v", err)
+	}
+	if n := atomic.LoadInt32(&attempts); n != 2 {
+		t.Errorf("/v1/events: expected 2 attempts, got %d", n)
+	}
+}
+
+func TestRetrySafe(t *testing.T) {
+	for _, tc := range []struct {
+		method, path, key string
+		want              bool
+	}{
+		{"GET", "/api/sources", "", true},
+		{"PATCH", "/api/destinations/d1", "", true},
+		{"DELETE", "/api/sources/s1", "k", true},
+		{"POST", "/api/send-event", "", false},
+		{"POST", "/api/send-event", "k", true},
+		{"POST", "/v1/events", "k", true},
+		// Matched without the query string, and exactly otherwise.
+		{"POST", "/api/send-event?dryRun=true", "k", true},
+		{"POST", "/v1/events#frag", "k", true},
+		{"POST", "/api/send-event/", "k", false},
+		{"POST", "/api/send-events", "k", false},
+		{"POST", "/api/sources?x=/api/send-event", "k", false},
+		{"POST", "/api/webhook-endpoints/ep_1/rotate-secret", "k", false},
+		{"POST", "/api/destinations/d1/rotate-secret", "k", false},
+		{"POST", "/api/deliveries/d1/replay", "k", false},
+	} {
+		if got := retrySafe(tc.method, tc.path, tc.key); got != tc.want {
+			t.Errorf("retrySafe(%s, %s, %q) = %v, want %v", tc.method, tc.path, tc.key, got, tc.want)
+		}
 	}
 }

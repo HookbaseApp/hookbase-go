@@ -74,12 +74,14 @@ type EventDeliveryInfo struct {
 	// came back.
 	StatusCode *int `json:"responseStatus"`
 	// Attempts is the number of attempts made so far (the API's attemptCount).
-	Attempts     int     `json:"attemptCount"`
-	MaxAttempts  int     `json:"maxAttempts"`
-	NextRetryAt  *string `json:"nextRetryAt"`
-	ResponseBody *string `json:"responseBody"`
-	LatencyMs    *int    `json:"latencyMs"`
-	ErrorMessage *string `json:"errorMessage"`
+	Attempts    int     `json:"attemptCount"`
+	MaxAttempts int     `json:"maxAttempts"`
+	NextRetryAt *string `json:"nextRetryAt"`
+	// HoldExpiresAt is set only while the delivery is held (DeliveryHeld); NextRetryAt is then nil.
+	HoldExpiresAt *string `json:"holdExpiresAt"`
+	ResponseBody  *string `json:"responseBody"`
+	LatencyMs     *int    `json:"latencyMs"`
+	ErrorMessage  *string `json:"errorMessage"`
 	// DeliveredAt is set once the destination accepted the delivery; nil otherwise.
 	DeliveredAt *string `json:"deliveredAt"`
 	CreatedAt   string  `json:"createdAt"`
@@ -144,6 +146,69 @@ type EventDebugInfo struct {
 	} `json:"event"`
 	// CurlCommand re-sends the event to its ingest URL. Empty for a transient event.
 	CurlCommand string `json:"curlCommand"`
+	// Deliveries are the event's deliveries, with what the API knows about each failure.
+	Deliveries []EventDebugDelivery `json:"deliveries"`
+}
+
+// EventDebugDelivery is one delivery in an EventDebugInfo. Its field names are the debug view's
+// own (statusCode, durationMs, attempt, error), not those of Delivery.
+type EventDebugDelivery struct {
+	ID     string         `json:"id"`
+	Status DeliveryStatus `json:"status"`
+	// StatusCode is the destination's HTTP status; nil when no response came back.
+	StatusCode *int `json:"statusCode"`
+	DurationMs *int `json:"durationMs"`
+	// Attempt is the number of attempts made so far.
+	Attempt     int     `json:"attempt"`
+	MaxAttempts int     `json:"maxAttempts"`
+	NextRetryAt *string `json:"nextRetryAt"`
+	// HoldExpiresAt is set only while the delivery is held (DeliveryHeld); NextRetryAt is then nil.
+	HoldExpiresAt   *string           `json:"holdExpiresAt"`
+	Error           *string           `json:"error"`
+	ResponseBody    *string           `json:"responseBody"`
+	ResponseHeaders map[string]string `json:"responseHeaders"`
+	// TransformedPayload is the payload after the route's transform, when one ran and was stored.
+	TransformedPayload interface{} `json:"transformedPayload"`
+	RouteID            string      `json:"routeId"`
+	DestinationID      string      `json:"destinationId"`
+	Destination        struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Method string `json:"method"`
+	} `json:"destination"`
+	StartedAt   string  `json:"startedAt"`
+	CompletedAt *string `json:"completedAt"`
+	// FailoverIndex is above 0 for a failover destination's delivery.
+	FailoverIndex    int     `json:"failoverIndex"`
+	ParentDeliveryID *string `json:"parentDeliveryId"`
+	// Fingerprint groups deliveries that failed the same way; ClusterCount is how many share it.
+	Fingerprint  *string `json:"fingerprint"`
+	ClusterCount *int    `json:"clusterCount"`
+	// RetryAfter is the destination's Retry-After response header, if it sent one.
+	RetryAfter *string `json:"retryAfter"`
+	// PatternHints are the known failure patterns the delivery matches. Empty unless it failed.
+	PatternHints []FailurePatternHint `json:"patternHints"`
+	// RouteCircuit is the route's circuit breaker; nil when the route no longer exists.
+	RouteCircuit *EventDebugRouteCircuit `json:"routeCircuit"`
+}
+
+// FailurePatternHint is a known failure pattern a failed delivery matches, with a likely cause and
+// a fix.
+type FailurePatternHint struct {
+	ID           string `json:"id"`
+	Category     string `json:"category"`
+	Title        string `json:"title"`
+	Hypothesis   string `json:"hypothesis"`
+	SuggestedFix string `json:"suggestedFix"`
+}
+
+// EventDebugRouteCircuit is a route's circuit breaker as the event debug view reports it.
+type EventDebugRouteCircuit struct {
+	State               CircuitState `json:"state"`
+	OpenedAt            *string      `json:"openedAt"`
+	CooldownSeconds     int          `json:"cooldownSeconds"`
+	FailureThreshold    int          `json:"failureThreshold"`
+	ConsecutiveFailures int          `json:"consecutiveFailures"`
 }
 
 // UnmarshalJSON reads the GET /api/events/:id/debug response shape.
@@ -160,8 +225,9 @@ func (d *EventDebugInfo) UnmarshalJSON(data []byte) error {
 		Request struct {
 			Headers map[string]string `json:"headers"`
 		} `json:"request"`
-		Payload interface{} `json:"payload"`
-		Debug   struct {
+		Payload    interface{}          `json:"payload"`
+		Deliveries []EventDebugDelivery `json:"deliveries"`
+		Debug      struct {
 			CurlCommand *string `json:"curlCommand"`
 		} `json:"debug"`
 	}
@@ -180,6 +246,7 @@ func (d *EventDebugInfo) UnmarshalJSON(data []byte) error {
 	if wire.Debug.CurlCommand != nil {
 		d.CurlCommand = *wire.Debug.CurlCommand
 	}
+	d.Deliveries = wire.Deliveries
 	return nil
 }
 

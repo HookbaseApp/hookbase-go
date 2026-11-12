@@ -203,8 +203,11 @@ type Source struct {
 	RouteCount     int      `json:"routeCount"`
 	// IngestURL is returned by Get and Create. It is not included in List responses.
 	IngestURL *string `json:"ingestUrl"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
+	// CatalogProvider is the provider-catalog entry (GET /api/catalog/providers) the source was
+	// created from; nil when none was given. It is set on create only.
+	CatalogProvider *string `json:"catalogProvider"`
+	CreatedAt       string  `json:"createdAt"`
+	UpdatedAt       string  `json:"updatedAt"`
 
 	// The fields below name response keys the API has never sent. They decoded to the zero value
 	// on every version of this SDK that declared them, so reading one has always told you nothing
@@ -259,6 +262,10 @@ type CreateSourceParams struct {
 	TransientMode     *bool   `json:"transientMode,omitempty"`
 	// AllowedMethods restricts the ingest endpoint to these HTTP verbs. Omit for any method.
 	AllowedMethods []string `json:"allowedMethods,omitempty"`
+	// CatalogProvider records the provider-catalog entry id the source is made from, e.g. a
+	// template that saves as a custom HMAC source. The API rejects an id not in the catalog, and
+	// it cannot be changed after creation (UpdateSourceParams has no such field).
+	CatalogProvider *string `json:"catalogProvider,omitempty"`
 }
 
 // SourceField names one source setting, for UpdateSourceParams.Clear.

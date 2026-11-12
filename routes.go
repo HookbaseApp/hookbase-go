@@ -48,6 +48,16 @@ type Route struct {
 	ExpectedResponse *string `json:"expectedResponse"`
 	CreatedAt        string  `json:"createdAt"`
 	UpdatedAt        string  `json:"updatedAt"`
+	// HoldOnCircuitOpen reports whether deliveries wait while the route's circuit breaker is open
+	// (DeliveryHeld) and are sent once it recovers. When it is false, a delivery is dead-lettered
+	// as soon as it meets the open circuit. The API defaults it to true. Holds need a plan with
+	// circuit breakers.
+	HoldOnCircuitOpen bool `json:"holdOnCircuitOpen"`
+	// HeldCount is the number of deliveries held on this route, counted up to 10,000, and
+	// HeldCountCapped is true when there are more. Only Get sets them; List and Create leave
+	// them zero.
+	HeldCount       int  `json:"heldCount"`
+	HeldCountCapped bool `json:"heldCountCapped"`
 }
 
 // UnmarshalJSON keeps expectedResponse as JSON text whether the API sends an object or a string.
@@ -118,6 +128,10 @@ type CreateRouteParams struct {
 	CircuitCooldownSeconds       *int `json:"circuitCooldownSeconds,omitempty"`
 	CircuitFailureThreshold      *int `json:"circuitFailureThreshold,omitempty"`
 	CircuitProbeSuccessThreshold *int `json:"circuitProbeSuccessThreshold,omitempty"`
+	// HoldOnCircuitOpen holds deliveries while the circuit breaker is open, to be sent once it
+	// recovers. False dead-letters a delivery as soon as it meets the open circuit. Nil uses the
+	// API's default, true.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 }
 
 // MarshalJSON sends ExpectedResponse as the JSON document it holds.
@@ -169,6 +183,11 @@ type UpdateRouteParams struct {
 	FailoverAfterAttempts  *int              `json:"failoverAfterAttempts,omitempty"`
 	// ExpectedResponse is the expected-response rule as JSON text, e.g. `{"statusCodes":[200]}`.
 	ExpectedResponse *string `json:"expectedResponse,omitempty"`
+	// HoldOnCircuitOpen turns holding deliveries while the circuit breaker is open on or off. With
+	// it off, a delivery is dead-lettered as soon as it meets the open circuit. Turning it off
+	// leaves deliveries already held to be released, and they are dead-lettered on their next
+	// attempt if the circuit is still open.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 
 	// Clear names settings to remove: nil and empty fields above mean "leave alone", so they cannot
 	// also mean "remove". Naming a field here sends a null for it, e.g. RouteFailoverDestinationIDs
