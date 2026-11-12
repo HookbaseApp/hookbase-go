@@ -196,6 +196,19 @@ func TestSurfaceInbound(t *testing.T) {
 		{name: "Destinations.Test", resp: obj("success", true, "statusCode", 200),
 			call:   func(ctx context.Context, c *Client) (interface{}, error) { return c.Destinations.Test(ctx, "dst_1") },
 			method: "POST", path: "/api/destinations/dst_1/test"},
+		{name: "Destinations.TestWithParams", resp: obj("success", true, "dryRun", true),
+			call: func(ctx context.Context, c *Client) (interface{}, error) {
+				return c.Destinations.TestWithParams(ctx, "dst_1", &TestDestinationParams{Payload: obj("type", "a")})
+			}, method: "POST", path: "/api/destinations/dst_1/test", body: obj("payload", obj("type", "a"))},
+		{name: "Destinations.RevealSecret", resp: obj("signingSecret", "whsec_x", "previousSecretExpiresAt", nil),
+			call: func(ctx context.Context, c *Client) (interface{}, error) {
+				return c.Destinations.RevealSecret(ctx, "dst_1")
+			},
+			method: "GET", path: "/api/destinations/dst_1/reveal-secret"},
+		{name: "Destinations.RotateSecret", resp: obj("signingSecret", "whsec_y", "previousSecretExpiresAt", "2026-11-11T13:00:00Z"),
+			call: func(ctx context.Context, c *Client) (interface{}, error) {
+				return c.Destinations.RotateSecret(ctx, "dst_1", Ptr(600))
+			}, method: "POST", path: "/api/destinations/dst_1/rotate-secret", body: obj("gracePeriodSeconds", 600)},
 		{name: "Destinations.Export", resp: obj("destinations", one),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
 				return c.Destinations.Export(ctx, []string{"a"})

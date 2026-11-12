@@ -45,7 +45,46 @@ const (
 	DestinationServiceBus  DestinationType = "servicebus"
 	DestinationPubSub      DestinationType = "pubsub"
 	DestinationOCIQueue    DestinationType = "oci_queue"
+	// DestinationBridge publishes each delivery as an outbound event, which goes to the
+	// organization's endpoints subscribed to its event type. Its Config is a BridgeConfig. Creating
+	// one, or a route to one, also needs the events:send permission.
+	DestinationBridge DestinationType = "bridge"
 )
+
+// BridgeEventTypeSource says where a bridge destination takes the event type it publishes from.
+type BridgeEventTypeSource string
+
+const (
+	// BridgeEventTypeFixed publishes every delivery as BridgeConfig.EventType.
+	BridgeEventTypeFixed BridgeEventTypeSource = "fixed"
+	// BridgeEventTypeField reads the event type from the payload field BridgeConfig.EventTypeField.
+	BridgeEventTypeField BridgeEventTypeSource = "field"
+)
+
+// BridgeConfig is the configuration of a bridge destination (DestinationBridge). Set it as
+// CreateDestinationParams.Config; Destination.Config returns it as JSON, which decodes into this
+// struct. A bridge takes no URL, headers, auth or static IP.
+type BridgeConfig struct {
+	// EventTypeSource is BridgeEventTypeFixed or BridgeEventTypeField.
+	EventTypeSource BridgeEventTypeSource `json:"eventTypeSource"`
+	// EventType is required with BridgeEventTypeFixed, and not allowed with BridgeEventTypeField.
+	// The event type must exist and be enabled.
+	EventType string `json:"eventType,omitempty"`
+	// EventTypeField is the payload field that holds the event type, as a dot path of at most five
+	// segments (e.g. "data.type"). Required with BridgeEventTypeField, and not allowed with
+	// BridgeEventTypeFixed. A delivery whose payload lacks the field, or names an event type that
+	// does not exist, fails.
+	EventTypeField string `json:"eventTypeField,omitempty"`
+	// EventTypePrefix is put in front of the field's value, e.g. "stripe." (BridgeEventTypeField
+	// only). Lowercase letters, digits and dots, starting with a letter, at most 50 characters.
+	EventTypePrefix string `json:"eventTypePrefix,omitempty"`
+	// ApplicationID limits the event to one outbound application's endpoints. Nil sends it to every
+	// subscribed endpoint of the organization.
+	ApplicationID *string `json:"applicationId,omitempty"`
+	// AllowUnverifiedSources also publishes events whose sender the source did not verify, by its
+	// signing secret or an IP allowlist. By default those deliveries fail.
+	AllowUnverifiedSources bool `json:"allowUnverifiedSources,omitempty"`
+}
 
 // S3Config is the configuration for an S3 warehouse destination.
 type S3Config struct {
@@ -139,6 +178,12 @@ type Destination struct {
 	DeliveryCount int    `json:"deliveryCount"`
 	CreatedAt     string `json:"createdAt"`
 	UpdatedAt     string `json:"updatedAt"`
+	// HasSigningSecret reports whether the destination signs its deliveries. Every HTTP
+	// destination does; queue, storage and bridge destinations send no request and have none.
+	HasSigningSecret bool `json:"hasSigningSecret"`
+	// SigningSecret is set only on the destination Create returns, which is the one time it is
+	// shown. Receivers verify deliveries with it (NewWebhook). Use RevealSecret to read it later.
+	SigningSecret string `json:"signingSecret,omitempty"`
 
 	// The fields below name response keys the API has never sent — there are no such columns on the
 	// destinations table (api/migrations/0001_schema.sql), so they decoded to the zero value on
@@ -180,7 +225,8 @@ type CreateDestinationParams struct {
 	// URL is required for http destinations and must not resolve to a private or internal address.
 	// Warehouse and queue destinations leave it empty and configure Config instead.
 	URL string `json:"url,omitempty"`
-	// Method is one of POST, PUT or PATCH; the API rejects GET and DELETE here. Defaults to POST.
+	// Method is one of GET, POST, PUT, PATCH or DELETE. Defaults to POST. A GET or DELETE
+	// delivery is sent without a body.
 	Method *HTTPMethod `json:"method,omitempty"`
 	// Headers is a map on a destination — unlike an endpoint, where the API takes an array of
 	// {name, value} pairs. This is the shape POST /api/destinations accepts.
@@ -318,7 +364,7 @@ func deriveDestinationSlug(name string) (string, error) {
 type UpdateDestinationParams struct {
 	Name *string `json:"name,omitempty"`
 	URL  *string `json:"url,omitempty"`
-	// Method is one of POST, PUT or PATCH.
+	// Method is one of GET, POST, PUT, PATCH or DELETE.
 	Method   *HTTPMethod       `json:"method,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	AuthType *AuthType         `json:"authType,omitempty"`
@@ -438,12 +484,44 @@ func (p *ListDestinationsParams) toQuery() url.Values {
 // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts), not
 // `statusCode`/`duration` — the struct tags map onto those field names explicitly
 // rather than the field names themselves, which stay as the SDK's public contract.
+//
+// Testing a bridge destination is a dry run: nothing is sent or published. DryRun is then true,
+// Success reports whether the resolved event type exists and is enabled, and the fields below
+// DryRun are set. StatusCode, Duration and ResponseBody stay zero.
 type DestinationTestResult struct {
 	Success      bool   `json:"success"`
 	StatusCode   int    `json:"status"`
 	Duration     int    `json:"latencyMs"`
 	ResponseBody string `json:"responseBody"`
 	Error        string `json:"error,omitempty"`
+
+	// DryRun is true for a bridge destination's test.
+	DryRun bool `json:"dryRun,omitempty"`
+	// EventType is the event type the bridge would publish for the sample payload; nil when none
+	// could be resolved (Error says why).
+	EventType *string `json:"eventType,omitempty"`
+	// EventTypeExists reports whether EventType exists and is enabled.
+	EventTypeExists bool `json:"eventTypeExists,omitempty"`
+	// MatchingEndpoints counts the endpoints subscribed to EventType, before label filters, filter
+	// expressions and circuit state.
+	MatchingEndpoints int `json:"matchingEndpoints,omitempty"`
+}
+
+// TestDestinationParams are the parameters for TestWithParams.
+type TestDestinationParams struct {
+	// Payload is the sample payload a bridge destination resolves its event type from, and must
+	// be a JSON object. Nil uses the API's test payload. Other destination types ignore it.
+	Payload map[string]interface{} `json:"payload,omitempty"`
+}
+
+// DestinationSecret is a destination's signing secret, as RevealSecret and RotateSecret return
+// it.
+type DestinationSecret struct {
+	// SigningSecret is the current secret ("whsec_..."). Verify deliveries with NewWebhook.
+	SigningSecret string `json:"signingSecret"`
+	// PreviousSecretExpiresAt is set while a rotated-out secret is still in its grace period:
+	// until then each delivery carries a signature made with each secret.
+	PreviousSecretExpiresAt *string `json:"previousSecretExpiresAt"`
 }
 
 // DestinationsResource provides access to destination-related API endpoints.
@@ -516,10 +594,54 @@ func (r *DestinationsResource) Delete(ctx context.Context, id string, opts ...Re
 	return r.t.do(ctx, "DELETE", "/api/destinations/"+url.PathEscape(id), nil, nil, nil, opts...)
 }
 
-// Test sends a test request to a destination and returns the result.
+// Test sends a test request to a destination and returns the result. For a bridge destination it
+// is a dry run with the API's test payload; use TestWithParams to supply a sample payload.
 func (r *DestinationsResource) Test(ctx context.Context, id string, opts ...RequestOption) (*DestinationTestResult, error) {
 	var resp DestinationTestResult
 	if err := r.t.do(ctx, "POST", "/api/destinations/"+url.PathEscape(id)+"/test", nil, nil, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TestWithParams is Test with a sample payload, which a bridge destination's dry run resolves its
+// event type from. With nil params it is the same as Test.
+func (r *DestinationsResource) TestWithParams(ctx context.Context, id string, params *TestDestinationParams, opts ...RequestOption) (*DestinationTestResult, error) {
+	var body interface{}
+	if params != nil {
+		body = params
+	}
+	var resp DestinationTestResult
+	if err := r.t.do(ctx, "POST", "/api/destinations/"+url.PathEscape(id)+"/test", nil, body, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RevealSecret returns an HTTP destination's signing secret. The API answers 400 for a destination
+// of another type, which has no secret.
+func (r *DestinationsResource) RevealSecret(ctx context.Context, id string, opts ...RequestOption) (*DestinationSecret, error) {
+	var resp DestinationSecret
+	if err := r.t.do(ctx, "GET", "/api/destinations/"+url.PathEscape(id)+"/reveal-secret", nil, nil, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RotateSecret replaces an HTTP destination's signing secret and returns the new one. The previous
+// secret keeps signing deliveries alongside it for gracePeriodSeconds (0 to 86400); nil uses the
+// API's default of 3600.
+//
+// It is not retried after a server error or a lost connection, since a second rotation would
+// replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
+// retries, and the API does not deduplicate rotations.
+func (r *DestinationsResource) RotateSecret(ctx context.Context, id string, gracePeriodSeconds *int, opts ...RequestOption) (*DestinationSecret, error) {
+	var body interface{}
+	if gracePeriodSeconds != nil {
+		body = &RotateSecretParams{GracePeriodSeconds: gracePeriodSeconds}
+	}
+	var resp DestinationSecret
+	if err := r.t.do(ctx, "POST", "/api/destinations/"+url.PathEscape(id)+"/rotate-secret", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -810,3 +810,183 @@ func TestEventsDebugDeliveries(t *testing.T) {
 		t.Errorf("TransformedPayload = %#v", d.TransformedPayload)
 	}
 }
+
+// --- Destinations: signing secrets, bridges, dry runs ------------------------------------------
+
+func TestDestinationCreateReturnsSigningSecretOnce(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "name": "Orders", "slug": "orders", "type": "http", "url": "https://example.com/hook",
+			"isActive": true, "hasSigningSecret": true, "signingSecret": "whsec_abc",
+		}}},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_1", "name": "Orders", "slug": "orders", "type": "http", "hasSigningSecret": true,
+		}}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	created, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{Name: "Orders", URL: "https://example.com/hook"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.HasSigningSecret || created.SigningSecret != "whsec_abc" {
+		t.Errorf("HasSigningSecret = %v, SigningSecret = %q", created.HasSigningSecret, created.SigningSecret)
+	}
+	got, err := client.Destinations.Get(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasSigningSecret || got.SigningSecret != "" {
+		t.Errorf("Get: HasSigningSecret = %v, SigningSecret = %q, want true and empty", got.HasSigningSecret, got.SigningSecret)
+	}
+}
+
+func TestDestinationRevealAndRotateSecret(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{"signingSecret": "whsec_cur", "previousSecretExpiresAt": nil}},
+		cannedResponse{body: map[string]interface{}{"signingSecret": "whsec_new", "previousSecretExpiresAt": "2026-11-11T13:00:00Z"}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	cur, err := client.Destinations.RevealSecret(context.Background(), "dst_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.SigningSecret != "whsec_cur" || cur.PreviousSecretExpiresAt != nil {
+		t.Errorf("reveal = %+v", cur)
+	}
+	rotated, err := client.Destinations.RotateSecret(context.Background(), "dst_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.SigningSecret != "whsec_new" || rotated.PreviousSecretExpiresAt == nil {
+		t.Errorf("rotate = %+v", rotated)
+	}
+	// Zero is a real grace period (end the old secret now), so it has to be sent, not dropped.
+	if _, err := client.Destinations.RotateSecret(context.Background(), "dst_1", Ptr(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	reqs := srv.all()
+	if reqs[0].Method != "GET" || reqs[0].Path != "/api/destinations/dst_1/reveal-secret" {
+		t.Errorf("reveal: %s %s", reqs[0].Method, reqs[0].Path)
+	}
+	for _, r := range reqs[1:] {
+		if r.Method != "POST" || r.Path != "/api/destinations/dst_1/rotate-secret" {
+			t.Errorf("rotate: %s %s", r.Method, r.Path)
+		}
+	}
+	if len(reqs[1].Body) != 0 {
+		t.Errorf("nil grace period should send no body, got %s", reqs[1].Body)
+	}
+	if string(reqs[2].Body) != `{"gracePeriodSeconds":0}` {
+		t.Errorf("body = %s", reqs[2].Body)
+	}
+}
+
+// Rotation is not idempotent, so a 5xx must not be retried into a second rotation.
+func TestDestinationRotateSecretIsNotRetried(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{status: 502, body: map[string]interface{}{"error": "bad gateway"}})
+	client := New("test_key", WithBaseURL(srv.URL), WithMaxRetries(3))
+	if _, err := client.Destinations.RotateSecret(context.Background(), "dst_1", nil); err == nil {
+		t.Fatal("expected an error")
+	}
+	if n := len(srv.all()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
+	}
+}
+
+func TestDestinationCreateBridgeBody(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: map[string]interface{}{"destination": map[string]interface{}{
+		"id": "dst_b", "name": "Bridge", "slug": "bridge", "type": "bridge", "url": "",
+		"config":           map[string]interface{}{"eventTypeSource": "field", "eventTypeField": "type", "eventTypePrefix": "stripe.", "applicationId": nil},
+		"hasSigningSecret": false, "signingSecret": nil,
+	}}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	dest, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "Bridge",
+		Type: Ptr(DestinationBridge),
+		Config: BridgeConfig{
+			EventTypeSource: BridgeEventTypeField,
+			EventTypeField:  "type",
+			EventTypePrefix: "stripe.",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"name":"Bridge","slug":"bridge","type":"bridge",` +
+		`"config":{"eventTypeSource":"field","eventTypeField":"type","eventTypePrefix":"stripe."}}`
+	if got := string(srv.only(t).Body); got != want {
+		t.Errorf("body\n got %s\nwant %s", got, want)
+	}
+	if dest.Type != DestinationBridge || dest.HasSigningSecret || dest.SigningSecret != "" {
+		t.Errorf("destination = %+v", dest)
+	}
+	var cfg BridgeConfig
+	if err := json.Unmarshal(dest.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EventTypeSource != BridgeEventTypeField || cfg.EventTypeField != "type" || cfg.EventTypePrefix != "stripe." || cfg.ApplicationID != nil {
+		t.Errorf("config = %+v", cfg)
+	}
+
+	// A fixed bridge sends eventType and none of the field-only keys.
+	b, err := json.Marshal(BridgeConfig{EventTypeSource: BridgeEventTypeFixed, EventType: "order.created", ApplicationID: Ptr("app_1"), AllowUnverifiedSources: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"eventTypeSource":"fixed","eventType":"order.created","applicationId":"app_1","allowUnverifiedSources":true}` {
+		t.Errorf("fixed config = %s", b)
+	}
+}
+
+func TestDestinationTestWithParamsBridgeDryRun(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{body: map[string]interface{}{
+			"success": true, "dryRun": true, "eventType": "stripe.charge.succeeded",
+			"eventTypeExists": true, "matchingEndpoints": 2,
+		}},
+		cannedResponse{body: map[string]interface{}{
+			"success": false, "dryRun": true, "eventType": nil, "eventTypeExists": false,
+			"matchingEndpoints": 0, "error": "Payload field 'type' is missing",
+		}},
+	)
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Destinations.TestWithParams(context.Background(), "dst_b", &TestDestinationParams{
+		Payload: map[string]interface{}{"type": "charge.succeeded"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || !res.DryRun || res.EventType == nil || *res.EventType != "stripe.charge.succeeded" ||
+		!res.EventTypeExists || res.MatchingEndpoints != 2 || res.StatusCode != 0 {
+		t.Errorf("dry run = %+v", res)
+	}
+	res, err = client.Destinations.Test(context.Background(), "dst_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success || !res.DryRun || res.EventType != nil || res.Error == "" {
+		t.Errorf("unresolved dry run = %+v", res)
+	}
+
+	reqs := srv.all()
+	if reqs[0].Path != "/api/destinations/dst_b/test" || string(reqs[0].Body) != `{"payload":{"type":"charge.succeeded"}}` {
+		t.Errorf("TestWithParams sent %s %s", reqs[0].Path, reqs[0].Body)
+	}
+	if len(reqs[1].Body) != 0 {
+		t.Errorf("Test should send no body, got %s", reqs[1].Body)
+	}
+}
+
+func TestDestinationTypeAndMethodConstants(t *testing.T) {
+	if DestinationBridge != "bridge" || BridgeEventTypeFixed != "fixed" || BridgeEventTypeField != "field" {
+		t.Error("bridge constants do not match the API")
+	}
+	if DeliveryAwaitingRetry != "awaiting_retry" || DeliveryHeld != "held" || MessageHeld != "held" {
+		t.Error("hold status constants do not match the API")
+	}
+}
