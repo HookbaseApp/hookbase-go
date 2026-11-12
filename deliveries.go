@@ -124,10 +124,56 @@ func (p *ListDeliveriesParams) toQuery() url.Values {
 	return q
 }
 
-// ReplayResult is the result of replaying a delivery.
+// ReplayResult is the result of replaying a delivery. The flags report which of ReplayWithParams'
+// edits the replay used; all are false for a plain Replay.
 type ReplayResult struct {
+	// DeliveryID is the new delivery the replay created.
 	DeliveryID string `json:"deliveryId"`
 	Message    string `json:"message"`
+	// Modified reports an edited payload (ModifiedPayload or PayloadPatch).
+	Modified bool `json:"modified"`
+	// DestinationOverridden reports that the replay goes to a different destination than the
+	// original delivery.
+	DestinationOverridden bool `json:"destinationOverridden"`
+	TransformOverridden   bool `json:"transformOverridden"`
+	// TransformPersisted reports that the override was also saved as the route's transform.
+	TransformPersisted bool `json:"transformPersisted"`
+	HeadersOverridden  bool `json:"headersOverridden"`
+	// TargetDestinationID is the destination the replay is sent to.
+	TargetDestinationID string `json:"targetDestinationId"`
+}
+
+// ReplayParams are the edits ReplayWithParams applies to a replay. Every field is optional, and a
+// field left at its zero value is not sent.
+type ReplayParams struct {
+	// ModifiedPayload replaces the stored payload for this replay. Any value that marshals to JSON
+	// works, e.g. a map or a json.RawMessage. Set ModifiedPayload or PayloadPatch, not both.
+	ModifiedPayload interface{} `json:"modifiedPayload,omitempty"`
+	// PayloadPatch is an RFC 7386 JSON merge patch applied to the stored payload: a key set to
+	// null removes that key, and keys the patch leaves out are kept. Prefer it for a source that
+	// masks or encrypts fields, where the payload you can read is not the stored one. It may not
+	// touch an encrypted field.
+	PayloadPatch interface{} `json:"payloadPatch,omitempty"`
+	// DestinationOverride sends the replay to another destination of the organization, by ID or
+	// slug.
+	DestinationOverride *string `json:"destinationOverride,omitempty"`
+	// TransformOverride runs this transform for the replay instead of the route's.
+	TransformOverride *TransformOverride `json:"transformOverride,omitempty"`
+	// HeadersOverride adds or replaces request headers for this replay, 50 at most. The API
+	// rejects headers the worker sets itself, such as Content-Length and the signature headers.
+	HeadersOverride map[string]string `json:"headersOverride,omitempty"`
+	// PersistTransform also saves TransformOverride as the route's transform. It needs
+	// TransformOverride, and the route must already have a transform.
+	PersistTransform bool `json:"persistTransform,omitempty"`
+}
+
+// TransformOverride is a one-off transform for ReplayWithParams. Fields left nil take the route's
+// transform settings.
+type TransformOverride struct {
+	Code         string         `json:"code"`
+	Type         *TransformType `json:"type,omitempty"`
+	InputFormat  *ContentFormat `json:"inputFormat,omitempty"`
+	OutputFormat *ContentFormat `json:"outputFormat,omitempty"`
 }
 
 // BulkReplayResult is the result of replaying multiple deliveries.
@@ -196,6 +242,24 @@ func (r *DeliveriesResource) Get(ctx context.Context, deliveryID string, opts ..
 func (r *DeliveriesResource) Replay(ctx context.Context, deliveryID string, opts ...RequestOption) (*ReplayResult, error) {
 	var resp ReplayResult
 	if err := r.t.do(ctx, "POST", "/api/deliveries/"+url.PathEscape(deliveryID)+"/replay", nil, nil, &resp, opts...); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ReplayWithParams replays a single delivery with edits: a changed payload, another destination,
+// a one-off transform or extra headers. With nil params it is the same as Replay. Setting both
+// ModifiedPayload and PayloadPatch returns an error without sending a request.
+func (r *DeliveriesResource) ReplayWithParams(ctx context.Context, deliveryID string, params *ReplayParams, opts ...RequestOption) (*ReplayResult, error) {
+	var body interface{}
+	if params != nil {
+		if params.ModifiedPayload != nil && params.PayloadPatch != nil {
+			return nil, &Error{Message: "hookbase: set ReplayParams.ModifiedPayload or PayloadPatch, not both"}
+		}
+		body = params
+	}
+	var resp ReplayResult
+	if err := r.t.do(ctx, "POST", "/api/deliveries/"+url.PathEscape(deliveryID)+"/replay", nil, body, &resp, opts...); err != nil {
 		return nil, err
 	}
 	return &resp, nil

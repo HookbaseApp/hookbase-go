@@ -563,3 +563,145 @@ func TestTransformTypesMatchAPIEngines(t *testing.T) {
 		}
 	}
 }
+
+func TestTransformsEngines(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"engines": []interface{}{
+			map[string]interface{}{
+				"type": "jsonata", "label": "JSONata", "description": "Query and transform JSON",
+				"fileExtension": "jsonata", "starterCode": "{ \"id\": id }", "aiGenerate": true, "available": true,
+			},
+			map[string]interface{}{
+				"type": "jq", "label": "jq", "description": "The jq language",
+				"fileExtension": "jq", "starterCode": ".", "aiGenerate": false, "available": false,
+			},
+		},
+		"contentFormats": []string{"json", "xml", "text"},
+	}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Transforms.Engines(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := srv.only(t); r.Method != "GET" || r.Path != "/api/transforms/engines" {
+		t.Errorf("got %s %s", r.Method, r.Path)
+	}
+	if len(res.Engines) != 2 {
+		t.Fatalf("Engines = %+v", res.Engines)
+	}
+	js, jq := res.Engines[0], res.Engines[1]
+	if js.Type != TransformJSONata || js.Label != "JSONata" || js.FileExtension != "jsonata" ||
+		js.StarterCode == "" || !js.AIGenerate || !js.Available || js.Description == "" {
+		t.Errorf("jsonata engine = %+v", js)
+	}
+	if jq.Type != TransformJQ || jq.AIGenerate || jq.Available {
+		t.Errorf("jq engine = %+v, want unavailable", jq)
+	}
+	if len(res.ContentFormats) != 3 || res.ContentFormats[0] != ContentJSON || res.ContentFormats[2] != ContentText {
+		t.Errorf("ContentFormats = %v", res.ContentFormats)
+	}
+}
+
+// --- Replay with edits ------------------------------------------------------------------------
+
+func replayResponse() cannedResponse {
+	return cannedResponse{body: map[string]interface{}{
+		"deliveryId": "del_9", "message": "Replay queued with modified payload, header overrides",
+		"modified": true, "destinationOverridden": true, "transformOverridden": true,
+		"transformPersisted": true, "headersOverridden": true, "targetDestinationId": "dst_2",
+	}}
+}
+
+func TestDeliveriesReplayWithParamsBody(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		// A merge patch keeps its nulls: null is how it deletes a key.
+		PayloadPatch:        json.RawMessage(`{"order":{"note":null,"total":42}}`),
+		DestinationOverride: Ptr("backup-dest"),
+		TransformOverride:   &TransformOverride{Code: "$", Type: Ptr(TransformJSONata), OutputFormat: Ptr(ContentJSON)},
+		HeadersOverride:     map[string]string{"X-Replay": "1"},
+		PersistTransform:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := srv.only(t)
+	if r.Method != "POST" || r.Path != "/api/deliveries/del_1/replay" {
+		t.Errorf("got %s %s", r.Method, r.Path)
+	}
+	want := `{"payloadPatch":{"order":{"note":null,"total":42}},"destinationOverride":"backup-dest",` +
+		`"transformOverride":{"code":"$","type":"jsonata","outputFormat":"json"},` +
+		`"headersOverride":{"X-Replay":"1"},"persistTransform":true}`
+	if string(r.Body) != want {
+		t.Errorf("body\n got %s\nwant %s", r.Body, want)
+	}
+	if res.DeliveryID != "del_9" || !res.Modified || !res.DestinationOverridden || !res.TransformOverridden ||
+		!res.TransformPersisted || !res.HeadersOverridden || res.TargetDestinationID != "dst_2" {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+// Unset fields are left out, so a replay with only a new payload sends only modifiedPayload; nil
+// params send no body at all, as Replay does.
+func TestDeliveriesReplayWithParamsOmitsUnsetFields(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		ModifiedPayload: map[string]interface{}{"id": "ch_1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Deliveries.Replay(context.Background(), "del_1"); err != nil {
+		t.Fatal(err)
+	}
+	reqs := srv.all()
+	if string(reqs[0].Body) != `{"modifiedPayload":{"id":"ch_1"}}` {
+		t.Errorf("body = %s", reqs[0].Body)
+	}
+	if len(reqs[1].Body) != 0 || len(reqs[2].Body) != 0 {
+		t.Errorf("nil params and Replay should send no body, got %q and %q", reqs[1].Body, reqs[2].Body)
+	}
+}
+
+// The API answers 400 PAYLOAD_EDIT_AMBIGUOUS to both; the SDK refuses before sending anything.
+func TestDeliveriesReplayWithParamsRejectsBothPayloadEdits(t *testing.T) {
+	srv := newRecordingServer(t, replayResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	_, err := client.Deliveries.ReplayWithParams(context.Background(), "del_1", &ReplayParams{
+		ModifiedPayload: map[string]interface{}{"a": 1},
+		PayloadPatch:    map[string]interface{}{"b": 2},
+	})
+	if err == nil {
+		t.Fatal("expected an error when both ModifiedPayload and PayloadPatch are set")
+	}
+	if _, ok := err.(*Error); !ok {
+		t.Errorf("err = %T, want *Error", err)
+	}
+	if n := len(srv.all()); n != 0 {
+		t.Errorf("%d requests sent, want none", n)
+	}
+}
+
+// A plain Replay still decodes the response it always did; the new flags read false.
+func TestDeliveriesReplayResultWithoutEdits(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"deliveryId": "del_9", "message": "Replay queued", "modified": false,
+		"destinationOverridden": false, "transformOverridden": false, "transformPersisted": false,
+		"headersOverridden": false, "targetDestinationId": "dst_1",
+	}})
+	res, err := New("test_key", WithBaseURL(srv.URL)).Deliveries.Replay(context.Background(), "del_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeliveryID != "del_9" || res.Modified || res.DestinationOverridden || res.TargetDestinationID != "dst_1" {
+		t.Errorf("result = %+v", res)
+	}
+}

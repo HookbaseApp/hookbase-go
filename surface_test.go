@@ -324,6 +324,9 @@ func TestSurfaceInbound(t *testing.T) {
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
 				return c.Transforms.Test(ctx, &TransformTestParams{TransformType: TransformJSONata, Code: "$", Payload: obj("a", 1)})
 			}, method: "POST", path: "/api/transforms/test", body: obj("code", "$")},
+		{name: "Transforms.Engines", resp: obj("engines", []interface{}{obj("type", "jsonata")}, "contentFormats", []string{"json"}),
+			call:   func(ctx context.Context, c *Client) (interface{}, error) { return c.Transforms.Engines(ctx) },
+			method: "GET", path: "/api/transforms/engines"},
 
 		// Schemas
 		{name: "Schemas.List", resp: obj("schemas", one, "pagination", obj("total", 1)),
@@ -411,6 +414,10 @@ func TestSurfaceInbound(t *testing.T) {
 		{name: "Deliveries.Replay", resp: obj("success", true),
 			call:   func(ctx context.Context, c *Client) (interface{}, error) { return c.Deliveries.Replay(ctx, "d_1") },
 			method: "POST", path: "/api/deliveries/d_1/replay"},
+		{name: "Deliveries.ReplayWithParams", resp: obj("deliveryId", "d_2", "modified", true),
+			call: func(ctx context.Context, c *Client) (interface{}, error) {
+				return c.Deliveries.ReplayWithParams(ctx, "d_1", &ReplayParams{PayloadPatch: obj("a", nil)})
+			}, method: "POST", path: "/api/deliveries/d_1/replay", body: obj("payloadPatch", obj("a", nil))},
 		{name: "Deliveries.BulkReplay", resp: obj("success", true),
 			call: func(ctx context.Context, c *Client) (interface{}, error) {
 				return c.Deliveries.BulkReplay(ctx, []string{"d_1"})
