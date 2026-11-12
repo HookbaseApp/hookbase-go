@@ -33,11 +33,14 @@ type redactors struct {
 	// credential matches a JSON member that carries a credential: its key is exactly secret,
 	// token, password, key, Authorization, authorization, headerValue or curlCommand, or ends in
 	// Secret, Token, Password or Key (signingSecret, clientSecret, secretAccessKey, verifyToken,
-	// authToken, apiKey, privateKey, and header names such as X-Api-Key), and its value is a
-	// string. Keys are matched case-sensitively, as the API names them. Only string values are
-	// replaced, so hasSigningSecret (a boolean) and a null secret still show; secretPrefix doesn't
-	// match. A few non-secrets such as publicKey and idempotencyKey are redacted too, which is fine
-	// for a debug log. headerValue is a custom_header destination's auth header; curlCommand
+	// authToken, apiKey, privateKey, and header names such as X-Api-Key) or in _token, _secret or
+	// _password (the auth_token Tunnels.Create returns), and its value is a string. Keys are
+	// matched case-sensitively, as the API names them. Only string values are replaced, so
+	// hasSigningSecret (a boolean) and a null secret still show; secretPrefix doesn't match. A few
+	// non-secrets such as publicKey and idempotencyKey are redacted too, which is fine for a debug
+	// log. A _key suffix is not matched, since it would catch non-secrets: the payload_key (an
+	// object key) some event routes return, and the idempotency_key or dedup_key in providers'
+	// payloads. headerValue is a custom_header destination's auth header; curlCommand
 	// (Events.Debug) repeats the event's inbound headers.
 	credential *regexp.Regexp
 	// headers matches a member that holds HTTP headers (headers, requestHeaders,
@@ -49,14 +52,20 @@ type redactors struct {
 	// headerToken matches each string in a headers container, with the colon after it when it
 	// is a member's key.
 	headerToken *regexp.Regexp
+	// urlToken matches a token in a URL's query string, such as the token= in the wsUrl
+	// Tunnels.Create returns, and captures everything before the value: the separator (?, &, or
+	// & as Go's encoder escapes it, \u0026) and a parameter named token or ending in _token or
+	// Token. The value runs to the next &, #, quote, backslash or space.
+	urlToken *regexp.Regexp
 }
 
 var redaction = sync.OnceValue(func() *redactors {
 	return &redactors{
-		credential: regexp.MustCompile(`"(secret|token|password|key|Authorization|authorization|headerValue|curlCommand|[A-Za-z0-9_-]*(?:Secret|Token|Password|Key))"(\s*:\s*)` + jsonString),
+		credential: regexp.MustCompile(`"(secret|token|password|key|Authorization|authorization|headerValue|curlCommand|[A-Za-z0-9_-]*(?:Secret|Token|Password|Key|_token|_secret|_password))"(\s*:\s*)` + jsonString),
 		headers: regexp.MustCompile(`"(?:headers|headersOverride|[A-Za-z0-9_]*Headers)"\s*:\s*(` +
 			jsonString + `|\{(?:[^{}"]|` + jsonString + `)*\}|\[(?:[^\[\]"]|` + jsonString + `)*\])`),
 		headerToken: regexp.MustCompile(jsonString + `(?:\s*:)?`),
+		urlToken:    regexp.MustCompile(`((?:[?&]|\\u0026)(?:token|[A-Za-z0-9_.-]*(?:_token|Token))=)[^&#"\\\s]+`),
 	}
 })
 
@@ -67,10 +76,12 @@ var redaction = sync.OnceValue(func() *redactors {
 //
 // Every header value is replaced, whatever the header's name, since any custom header can carry
 // a credential: each value of a headers object, each value in a headers array of {name, value}
-// objects (the names stay), and a headers member sent as a JSON-encoded string as a whole.
+// objects (the names stay), and a headers member sent as a JSON-encoded string as a whole. So is
+// a token in any URL's query string; the rest of the URL stays.
 func redactSecrets(body []byte) string {
 	r := redaction()
 	s := r.credential.ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
+	s = r.urlToken.ReplaceAllString(s, `${1}[REDACTED]`)
 	matches := r.headers.FindAllStringSubmatchIndex(s, -1)
 	if matches == nil {
 		return s
@@ -166,7 +177,7 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	}
 
 	if t.debug {
-		log.Printf("[hookbase] %s %s", method, u)
+		log.Printf("[hookbase] %s %s", method, redaction().urlToken.ReplaceAllString(u, `${1}[REDACTED]`))
 		if bodyBytes != nil {
 			log.Printf("[hookbase] Body: %s", redactSecrets(bodyBytes))
 		}

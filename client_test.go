@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -476,6 +477,80 @@ func TestDebugLoggingRedactsDestinationHeaderValues(t *testing.T) {
 	}
 }
 
+// Tunnels.Create returns the tunnel's auth token twice: as tunnel.auth_token, a snake_case key,
+// and in the token= query parameter of wsUrl. Neither reaches the debug log; the rest of the URL
+// does, and the caller still gets both.
+func TestDebugLoggingRedactsTunnelToken(t *testing.T) {
+	// Written as the API writes it, with a literal & (Go's encoder would escape it as \u0026).
+	srv := newRecordingServer(t, cannedResponse{status: 201, body: `{"tunnel":{"id":"tun_1","name":"dev",` +
+		`"subdomain":"dev-1","status":"disconnected","auth_token":"whtun_createdSecret"},` +
+		`"tunnelUrl":"https://api.hookbase.app/t/dev-1",` +
+		`"wsUrl":"wss://api.hookbase.app/tunnels/dev-1/ws?tunnelId=tun_1&token=whtun_createdSecret"}`})
+	logged := captureLog(t)
+
+	tunnel, err := New("k", WithBaseURL(srv.URL), WithDebug(true)).Tunnels.Create(context.Background(),
+		&CreateTunnelParams{Name: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := logged.String()
+	if strings.Contains(out, "whtun_createdSecret") {
+		t.Errorf("debug log contains the tunnel token:\n%s", out)
+	}
+	for _, want := range []string{
+		`"auth_token":"[REDACTED]"`,
+		`"wsUrl":"wss://api.hookbase.app/tunnels/dev-1/ws?tunnelId=tun_1&token=[REDACTED]"`,
+		`"tunnelUrl":"https://api.hookbase.app/t/dev-1"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if tunnel.AuthToken == nil || *tunnel.AuthToken != "whtun_createdSecret" ||
+		tunnel.WSURL == nil || !strings.HasSuffix(*tunnel.WSURL, "&token=whtun_createdSecret") {
+		t.Errorf("Create returned AuthToken %v and WSURL %v, want the real token", tunnel.AuthToken, tunnel.WSURL)
+	}
+}
+
+// A token in a URL's query string is redacted wherever the URL appears: a string value in a
+// request body (where Go's encoder writes & as \u0026) or a response body, and the request line.
+func TestDebugLoggingRedactsURLToken(t *testing.T) {
+	srv := newRecordingServer(t,
+		cannedResponse{status: 201, body: `{"data":{"id":"ep_1","url":"https://example.com/hook?token=url_respToken&v=2"}}`},
+		cannedResponse{body: `{}`},
+	)
+	logged := captureLog(t)
+
+	client := New("k", WithBaseURL(srv.URL), WithDebug(true))
+	if _, err := client.Endpoints.Create(context.Background(), "app_1", &CreateEndpointParams{
+		URL: "https://example.com/hook?token=url_reqToken&v=2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.transport.do(context.Background(), "GET", "/api/things", url.Values{"token": {"url_queryToken"}, "page": {"2"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logged.String()
+	for _, token := range []string{"url_reqToken", "url_respToken", "url_queryToken"} {
+		if strings.Contains(out, token) {
+			t.Errorf("debug log contains the URL token %q:\n%s", token, out)
+		}
+	}
+	for _, want := range []string{
+		`"url":"https://example.com/hook?token=[REDACTED]\u0026v=2"`,
+		`"url":"https://example.com/hook?token=[REDACTED]&v=2"`,
+		"GET " + srv.URL + "/api/things?page=2&token=[REDACTED]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log is missing %s:\n%s", want, out)
+		}
+	}
+	if r := srv.all()[1]; r.Query.Get("token") != "url_queryToken" {
+		t.Errorf("the request itself must carry the token, sent %v", r.Query)
+	}
+}
+
 func TestRedactSecrets(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
@@ -502,6 +577,16 @@ func TestRedactSecrets(t *testing.T) {
 		{`[{"headers":[]},{"headers":{}},{"headers":null}]`, `[{"headers":[]},{"headers":{}},{"headers":null}]`},
 		// Headers sent as a JSON-encoded string are replaced whole.
 		{`{"headers":"{\"X-Trace\":\"v\"}","responseHeaders":"{}"}`, `{"headers":"[REDACTED]","responseHeaders":"[REDACTED]"}`},
+		// snake_case keys ending in _token, _secret or _password; not _key, which names
+		// non-secrets such as payload_key (an event's object key) and idempotency_key.
+		{`{"tunnel":{"auth_token":"t","access_token":"a","client_secret":"c","http_auth_password":"p","is_session_token":false,"payload_key":"events/e1","idempotency_key":"i"}}`,
+			`{"tunnel":{"auth_token":"[REDACTED]","access_token":"[REDACTED]","client_secret":"[REDACTED]","http_auth_password":"[REDACTED]","is_session_token":false,"payload_key":"events/e1","idempotency_key":"i"}}`},
+		// A token in a URL's query string, after ?, & or & as Go encodes it (\u0026); the rest of
+		// the URL stays.
+		{`{"wsUrl":"wss://api.hookbase.app/tunnels/s/ws?tunnelId=t1&token=tok","url":"https://x/h?token=a#frag"}`,
+			`{"wsUrl":"wss://api.hookbase.app/tunnels/s/ws?tunnelId=t1&token=[REDACTED]","url":"https://x/h?token=[REDACTED]#frag"}`},
+		{`{"url":"https://x/h?a=1\u0026access_token=b\u0026c=2","u":"https://x/h?pageToken=p&tokenType=bearer&token=&mytoken=m"}`,
+			`{"url":"https://x/h?a=1\u0026access_token=[REDACTED]\u0026c=2","u":"https://x/h?pageToken=[REDACTED]&tokenType=bearer&token=&mytoken=m"}`},
 		// A custom_header destination's auth header value; its name stays.
 		{`{"authConfig":{"headerName":"X-Auth","headerValue":"hv"}}`, `{"authConfig":{"headerName":"X-Auth","headerValue":"[REDACTED]"}}`},
 		// An event's debug curl command repeats its inbound headers.

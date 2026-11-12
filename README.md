@@ -430,11 +430,13 @@ Additions:
 - `WithDebug` redacts credentials in the request and response bodies it logs: the string value
   of any JSON key named `secret`, `token`, `password`, `key`, `Authorization`, `headerValue` or
   `curlCommand`, or ending in `Secret`, `Token`, `Password` or `Key` (`signingSecret`,
-  `secretAccessKey`, `verifyToken`, `apiKey`, ...). It also redacts every header value, whatever
-  the header's name: each value of a `headers` object (a destination's, an event's,
-  `requestHeaders`, `responseHeaders`, `headersOverride`), each `value` in an endpoint's `headers`
-  array of `{name, value}` pairs, and headers sent as a JSON-encoded string. Header names stay
-  readable.
+  `secretAccessKey`, `verifyToken`, `apiKey`, ...) or in `_token`, `_secret` or `_password`
+  (`auth_token`). It redacts a token in a URL's query string (`?token=`, `&access_token=`, ...),
+  in bodies and in the logged request URL, and leaves the rest of the URL. It also redacts every
+  header value, whatever the header's name: each value of a `headers` object (a destination's,
+  an event's, `requestHeaders`, `responseHeaders`, `headersOverride`), each `value` in an
+  endpoint's `headers` array of `{name, value}` pairs, and headers sent as a JSON-encoded string.
+  Header names stay readable.
 
 If your code switches on a delivery or message status, add cases for the new ones: a delivery
 that used to read `pending` between retries may now read `awaiting_retry` or `held`.
