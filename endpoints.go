@@ -727,8 +727,8 @@ func (r *EndpointsResource) RotateSecret(ctx context.Context, applicationID, end
 // RotateSecretWithParams rotates the signing secret for an endpoint.
 //
 // It is not retried after a server error or a lost connection, since a second rotation would
-// replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
-// retries, and the API does not deduplicate rotations.
+// replace the secret the first one returned. The API does not deduplicate rotations, so
+// WithIdempotencyKey doesn't change this.
 func (r *EndpointsResource) RotateSecretWithParams(ctx context.Context, applicationID, endpointID string, params *RotateSecretParams, opts ...RequestOption) (*RotateSecretResult, error) {
 	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
 		return nil, err
@@ -855,8 +855,8 @@ type EndpointTestResult struct {
 }
 
 // TestWithParams sends a test event to an endpoint, with an optional event type and payload, and
-// returns the delivery outcome. Like every POST without an idempotency key it is not retried after
-// a server error, so the test is not delivered twice.
+// returns the delivery outcome. Like every POST but sending an event it is not retried after a
+// server error, with or without WithIdempotencyKey, so the test is not delivered twice.
 func (r *EndpointsResource) TestWithParams(ctx context.Context, applicationID, endpointID string, params *TestEndpointParams, opts ...RequestOption) (*EndpointTestResult, error) {
 	if err := r.ensureApplication(ctx, applicationID, endpointID, opts); err != nil {
 		return nil, err

@@ -647,8 +647,8 @@ func (r *DestinationsResource) RevealSecret(ctx context.Context, id string, opts
 // API's default of 3600.
 //
 // It is not retried after a server error or a lost connection, since a second rotation would
-// replace the secret the first one returned. Don't pass WithIdempotencyKey here: that re-enables
-// retries, and the API does not deduplicate rotations.
+// replace the secret the first one returned. The API does not deduplicate rotations, so
+// WithIdempotencyKey doesn't change this.
 func (r *DestinationsResource) RotateSecret(ctx context.Context, id string, gracePeriodSeconds *int, opts ...RequestOption) (*DestinationSecret, error) {
 	var body interface{}
 	if gracePeriodSeconds != nil {

@@ -82,11 +82,9 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 		maxRetries = 0
 	}
 
-	// A POST is not idempotent unless it carries an idempotency key: if a 5xx or a dropped
-	// connection hides whether the server acted on it, resending could create a second resource
-	// or deliver an event twice. Such requests are only retried on 429, which the API returns
-	// before doing any work.
-	retryOnServerError := method != "POST" || rc.idempotencyKey != ""
+	// A POST that is not retry-safe is only retried on 429, which the API returns before doing
+	// any work.
+	retryOnServerError := retrySafe(method, path, rc.idempotencyKey)
 
 	// Build URL
 	u := t.baseURL + path
@@ -184,6 +182,33 @@ func (t *transport) do(ctx context.Context, method, path string, query url.Value
 	return lastErr
 }
 
+// idempotentPostPaths are the POST paths where the API deduplicates on the Idempotency-Key header:
+// sending an event (Messages.Send) and the v1 events API. Resending one of them with the same key
+// returns the first result rather than acting again.
+var idempotentPostPaths = map[string]bool{
+	"/api/send-event": true,
+	"/v1/events":      true,
+}
+
+// retrySafe reports whether a request may be resent after a 5xx or a failed attempt (a network
+// error or a WithRequestTimeout deadline), when the server may already have acted on it. Every
+// method but POST is. A POST is only when it carries an idempotency key and goes to one of
+// idempotentPostPaths, matched without the query string. Every other route ignores the key, so a
+// resent create, replay, test or secret rotation would run twice: a second rotation replaces the
+// secret the first one returned.
+func retrySafe(method, path, idempotencyKey string) bool {
+	if method != http.MethodPost {
+		return true
+	}
+	if idempotencyKey == "" {
+		return false
+	}
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	return idempotentPostPaths[path]
+}
+
 // attemptResult is the outcome of a single HTTP attempt. Exactly one of these is meaningful:
 //   - err: terminal, not retried (the caller's ctx is done, or the request could not be built);
 //   - netErr: a transport failure, retried when the request is retry-safe. It is a *NetworkError,
@@ -225,6 +250,7 @@ func (t *transport) attempt(ctx context.Context, rc *requestConfig, method, u st
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if rc.idempotencyKey != "" {
+		// Sent on every route, though only idempotentPostPaths deduplicate on it.
 		req.Header.Set("Idempotency-Key", rc.idempotencyKey)
 	}
 

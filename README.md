@@ -294,8 +294,8 @@ err := client.Sources.Update(ctx, "src_123", params,
     hookbase.WithRequestRetries(0),               // don't retry this call
 )
 
-source, err := client.Sources.Create(ctx, createParams,
-    hookbase.WithIdempotencyKey("unique-key-123"), // lets this POST be retried on 5xx
+result, err := client.Messages.Send(ctx, "app_123", sendParams,
+    hookbase.WithIdempotencyKey("order-123-created"), // the API deduplicates sends on this key
 )
 ```
 
@@ -306,8 +306,11 @@ source, err := client.Sources.Create(ctx, createParams,
   `http.Client` timeout (`WithTimeout`, or your own client's `Timeout`). To cap the whole call,
   retries included, put a deadline on `ctx`.
 - `WithRequestRetries(n)` overrides `WithMaxRetries` for one call.
-- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. On a `POST` it also makes the request
-  eligible for retry after a 5xx or network error (see [Retry Behavior](#retry-behavior)).
+- `WithIdempotencyKey(key)` sends an `Idempotency-Key` header. The API deduplicates on it only when
+  sending an event (`POST /api/send-event`, which `Messages.Send` uses, and `POST /v1/events`), and
+  only there does the key make a `POST` eligible for retry after a 5xx or network error. On any
+  other `POST` (a create, replay, test or secret rotation) the key is ignored and does not enable
+  those retries (see [Retry Behavior](#retry-behavior)).
 
 ### Optional Fields
 
@@ -388,15 +391,16 @@ if err != nil {
 | Outcome | Retried? |
 |---------|----------|
 | 429 rate limit | Yes, any method, after `Retry-After` (seconds or an HTTP date; 60s if the header is missing or invalid). A `Retry-After` over 60s is returned as a `*RateLimitError` at once instead of being waited out |
-| 5xx | Yes, with exponential backoff, except a `POST` without an idempotency key |
+| 5xx | Yes, with exponential backoff, except a `POST` (one that sends an event with an idempotency key is retried) |
 | Network error (connection refused/reset, `http.Client` timeout) | Same as 5xx |
 | Any other 4xx (400, 401, 403, 404, 409, 422, ...) | No |
 | `WithRequestTimeout` deadline hit on one attempt | Same as 5xx; `*TimeoutError` once retries run out |
 | `ctx` cancelled or past its deadline | No, returns `*TimeoutError` (`errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` work) |
 
-- A `POST` is retried after a 5xx or network error only when it carries an idempotency key
-  (`Messages.Send` always does); other `POST`s are retried on 429 only, so a retry never creates
-  a duplicate.
+- A `POST` is retried after a 5xx or network error only when it sends an event with an
+  idempotency key (`Messages.Send` always carries one), since the API deduplicates on the key
+  only there. Other `POST`s are retried on 429 only, with or without `WithIdempotencyKey`, so a
+  retry never creates a duplicate or rotates a secret twice.
 - Default: 3 retries (4 attempts in total); a negative count is treated as 0. Backoff is 1s, 2s,
   4s, ... capped at 10s, plus up to 1s of random jitter.
 - Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
@@ -404,7 +408,14 @@ if err != nil {
 
 ## What's New in 1.14.0
 
-Every change is an addition; no signature or existing field changed.
+No signature or existing field changed. One behaviour change: `WithIdempotencyKey` no longer
+makes every `POST` retry-safe. Only sending an event (`Messages.Send`, `POST /v1/events`) is
+retried after a 5xx, network error or `WithRequestTimeout` deadline because of a key, since the
+API deduplicates on the key nowhere else. Before, a key passed to `Endpoints.RotateSecret`,
+`Destinations.RotateSecret`, a replay, a test or a create let a retry run the call twice. Those
+calls are now sent once (a 429 is still retried). The `Idempotency-Key` header is still sent.
+
+Additions:
 
 - `Transforms.Engines`.
 - `Deliveries.ReplayWithParams` and `ReplayParams`; `ReplayResult` reports which edits applied.
