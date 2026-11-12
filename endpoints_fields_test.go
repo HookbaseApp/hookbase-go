@@ -30,13 +30,13 @@ var (
 		"applicationId", "url", "description", "headers", "timeoutSeconds",
 		"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 		"ipAllowlistNotes", "useStaticIp", "circuitFailureThreshold",
-		"circuitSuccessThreshold", "circuitCooldownSeconds", "signatureScheme",
+		"circuitSuccessThreshold", "circuitCooldownSeconds", "holdOnCircuitOpen", "signatureScheme",
 	}
 	updateEndpointFields = []string{
 		"url", "description", "isDisabled", "disabledReason", "headers", "timeoutSeconds",
 		"rateLimitPerSecond", "successStatusCodes", "backoffType", "retryDelays",
 		"ipAllowlistNotes", "useStaticIp", "circuitFailureThreshold",
-		"circuitSuccessThreshold", "circuitCooldownSeconds", "signatureScheme",
+		"circuitSuccessThreshold", "circuitCooldownSeconds", "holdOnCircuitOpen", "signatureScheme",
 	}
 	// Keys the API has never accepted on an endpoint. Matched as complete JSON keys, because
 	// "rateLimit" is a prefix of the live "rateLimitPerSecond" — the same trap that let
@@ -65,6 +65,7 @@ func fullCreateEndpointParams() *CreateEndpointParams {
 		CircuitFailureThreshold: &i,
 		CircuitSuccessThreshold: &i,
 		CircuitCooldownSeconds:  &i,
+		HoldOnCircuitOpen:       &b,
 		SignatureScheme:         &scheme,
 
 		Headers:         map[string]string{"X-Old": "v"},
@@ -95,6 +96,7 @@ func fullUpdateEndpointParams() *UpdateEndpointParams {
 		CircuitFailureThreshold: &i,
 		CircuitSuccessThreshold: &i,
 		CircuitCooldownSeconds:  &i,
+		HoldOnCircuitOpen:       &b,
 		SignatureScheme:         &scheme,
 
 		Headers:         map[string]string{"X-Old": "v"},
@@ -140,6 +142,7 @@ func TestCreateEndpointParamsMarshalsExactBody(t *testing.T) {
 		CircuitFailureThreshold: Ptr(5),
 		CircuitSuccessThreshold: Ptr(2),
 		CircuitCooldownSeconds:  Ptr(60),
+		HoldOnCircuitOpen:       Ptr(false),
 	}
 	want := `{"applicationId":"app_1","url":"https://example.com/hooks",` +
 		`"description":"prod endpoint","headers":[{"name":"X-Api-Key","value":"k"}],` +
@@ -147,7 +150,7 @@ func TestCreateEndpointParamsMarshalsExactBody(t *testing.T) {
 		`"successStatusCodes":[200,204,"2xx"],"backoffType":"linear",` +
 		`"retryDelays":[5,30,120],"ipAllowlistNotes":"allow 203.0.113.0/24",` +
 		`"useStaticIp":true,"circuitFailureThreshold":5,"circuitSuccessThreshold":2,` +
-		`"circuitCooldownSeconds":60}`
+		`"circuitCooldownSeconds":60,"holdOnCircuitOpen":false}`
 	got, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -171,17 +174,37 @@ func TestUpdateEndpointParamsMarshalsExactBody(t *testing.T) {
 		RetryDelays:        []int{60},
 		IPAllowlistNotes:   Ptr("none"),
 		UseStaticIP:        Ptr(false),
+		HoldOnCircuitOpen:  Ptr(true),
 	}
 	want := `{"url":"https://example.com/v2","description":"moved","isDisabled":true,` +
 		`"disabledReason":"rotating credentials","headers":[{"name":"X-Api-Key","value":"k"}],` +
 		`"timeoutSeconds":10,"rateLimitPerSecond":0,"successStatusCodes":["2xx",404],` +
-		`"backoffType":"fixed","retryDelays":[60],"ipAllowlistNotes":"none","useStaticIp":false}`
+		`"backoffType":"fixed","retryDelays":[60],"ipAllowlistNotes":"none","useStaticIp":false,` +
+		`"holdOnCircuitOpen":true}`
 	got, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if string(got) != want {
 		t.Errorf("update body\n got %s\nwant %s", got, want)
+	}
+}
+
+// holdOnCircuitOpen must be a boolean (null is a 400), so an unset HoldOnCircuitOpen is left out of
+// the body rather than sent as null. False is covered by the exact-body test above.
+func TestEndpointParamsOmitUnsetHoldOnCircuitOpen(t *testing.T) {
+	for _, params := range []any{
+		CreateEndpointParams{ApplicationID: "app_1", URL: "https://a.example"},
+		UpdateEndpointParams{Description: Ptr("d")},
+		UpdateEndpointParams{Clear: []EndpointField{EndpointRetryDelays}},
+	} {
+		b, err := json.Marshal(params)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if bytes.Contains(b, []byte("holdOnCircuitOpen")) {
+			t.Errorf("an unset HoldOnCircuitOpen was sent: %s", b)
+		}
 	}
 }
 

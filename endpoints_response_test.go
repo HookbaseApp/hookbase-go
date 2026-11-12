@@ -26,6 +26,9 @@ var endpointResponseFields = []string{
 	"ipAllowlistNotes", "useStaticIp",
 	"circuitState", "circuitOpenedAt", "circuitFailureCount",
 	"circuitFailureThreshold", "circuitSuccessThreshold", "circuitCooldownSeconds",
+	"holdOnCircuitOpen",
+	// heldCount and heldCountCapped are added by GET /:id only, not by formatEndpoint.
+	"heldCount", "heldCountCapped",
 	"totalMessages", "totalSuccesses", "totalFailures", "avgResponseTimeMs",
 	"lastSuccessAt", "lastFailureAt", "lastResponseStatus",
 	"isVerified", "verifiedAt",
@@ -62,6 +65,9 @@ func endpointResponseBody() map[string]interface{} {
 		"circuitFailureThreshold": 7,
 		"circuitSuccessThreshold": 3,
 		"circuitCooldownSeconds":  120,
+		"holdOnCircuitOpen":       true,
+		"heldCount":               10000,
+		"heldCountCapped":         true,
 		"totalMessages":           900,
 		"totalSuccesses":          880,
 		"totalFailures":           20,
@@ -126,6 +132,10 @@ func TestEndpointDecodesTheDeliveryPolicy(t *testing.T) {
 	}
 	if ep.PublicKey == nil || *ep.PublicKey != "whpk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
 		t.Errorf("PublicKey = %v, want the whpk_ key", ep.PublicKey)
+	}
+	if !ep.HoldOnCircuitOpen || ep.HeldCount != 10000 || !ep.HeldCountCapped {
+		t.Errorf("HoldOnCircuitOpen = %v, HeldCount = %d, HeldCountCapped = %v, want true, 10000, true",
+			ep.HoldOnCircuitOpen, ep.HeldCount, ep.HeldCountCapped)
 	}
 }
 

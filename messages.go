@@ -23,7 +23,20 @@ const (
 	MessageAwaitingPull MessageStatus = "awaiting_pull"
 	// MessageFIFOWaiting is a message held behind an earlier one on a FIFO endpoint.
 	MessageFIFOWaiting MessageStatus = "fifo_waiting"
+	// MessageHeld is a message held while its endpoint's circuit breaker is open (the endpoint's
+	// HoldOnCircuitOpen). It is sent once the circuit recovers, or dead-lettered at HoldExpiresAt.
+	MessageHeld MessageStatus = "held"
 )
+
+// OutboundMessageBridge says which inbound event a bridge destination published a message's
+// event from.
+type OutboundMessageBridge struct {
+	InboundEventID string `json:"inboundEventId"`
+	// DeliveryID is the inbound delivery that published the event.
+	DeliveryID *string `json:"deliveryId"`
+	// Hop is how many bridges the event has crossed.
+	Hop *int `json:"hop"`
+}
 
 // OutboundMessage represents an outbound webhook message.
 //
@@ -44,6 +57,9 @@ type OutboundMessage struct {
 	LastErrorMessage   *string       `json:"lastErrorMessage"`
 	CreatedAt          string        `json:"createdAt"`
 	CompletedAt        *string       `json:"completedAt"`
+	// HoldExpiresAt is set only while the message is held (MessageHeld): if the endpoint's circuit
+	// has not recovered by then, the message is dead-lettered.
+	HoldExpiresAt *string `json:"holdExpiresAt"`
 
 	// Detail fields, returned by Get only.
 	SubscriptionID      *string                `json:"subscriptionId,omitempty"`
@@ -61,6 +77,11 @@ type OutboundMessage struct {
 	TraceID *string `json:"traceId,omitempty"`
 	// EventVersion is the event-type version label the payload was sent as. Get only.
 	EventVersion *string `json:"eventVersion,omitempty"`
+	// DeliveredEventVersion is the version the latest attempt delivered, after conversion to the
+	// subscription's pinned version. Get only; nil for an unversioned event type.
+	DeliveredEventVersion *string `json:"deliveredEventVersion,omitempty"`
+	// Bridge is set when a bridge destination published the message's event. Get only.
+	Bridge *OutboundMessageBridge `json:"bridge,omitempty"`
 
 	// Deprecated: the API has no such field; this was never populated by List or Get. Retry
 	// sets it to the replayed (original) message's ID. Use EventID for the event.
@@ -188,6 +209,12 @@ type SendMessageResponse struct {
 	EventID        string              `json:"eventId"`
 	MessagesQueued int                 `json:"messagesQueued"`
 	Endpoints      []SendEventEndpoint `json:"endpoints"`
+	// MessagesHeld is how many of MessagesQueued are held because their endpoint's circuit breaker
+	// is open. They are sent when it recovers. Zero on an idempotent repeat.
+	MessagesHeld int `json:"messagesHeld,omitempty"`
+	// EventVersion is the version label the payload was recorded in; empty for an unversioned
+	// event type.
+	EventVersion string `json:"eventVersion,omitempty"`
 
 	// Deprecated: this is the event ID, not a message ID. Use EventID.
 	MessageID string `json:"-"`
@@ -295,7 +322,9 @@ type OutboundStatsSummary struct {
 	AwaitingRetry int `json:"awaitingRetry"`
 	Exhausted     int `json:"exhausted"`
 	DLQ           int `json:"dlq"`
-	Total         int `json:"total"`
+	// Held counts messages held while their endpoint's circuit breaker is open.
+	Held  int `json:"held"`
+	Total int `json:"total"`
 }
 
 // MessagesResource provides access to message-related API endpoints.

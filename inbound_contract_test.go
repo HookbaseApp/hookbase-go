@@ -705,3 +705,108 @@ func TestDeliveriesReplayResultWithoutEdits(t *testing.T) {
 		t.Errorf("result = %+v", res)
 	}
 }
+
+// --- Holds and long retries (0132, 0134) --------------------------------------------------------
+
+// A held delivery's next_retry_at is its deadline: the API sends it as holdExpiresAt and nulls
+// nextRetryAt.
+func TestDeliveriesHeldFields(t *testing.T) {
+	held := deliveryRow()
+	held["status"] = "held"
+	held["holdExpiresAt"] = "2026-11-13T00:00:00Z"
+	waiting := deliveryRow()
+	waiting["status"] = "awaiting_retry"
+	waiting["nextRetryAt"] = "2026-11-12T01:00:00Z"
+	waiting["holdExpiresAt"] = nil
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"deliveries": []interface{}{held, waiting}, "limit": 50, "offset": 0,
+	}})
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	page, err := client.Deliveries.List(context.Background(), &ListDeliveriesParams{Status: Ptr(DeliveryHeld)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := srv.only(t).Query.Get("status"); q != "held" {
+		t.Errorf("status query = %q", q)
+	}
+	h, w := page.Data[0], page.Data[1]
+	if h.Status != DeliveryHeld || h.HoldExpiresAt == nil || *h.HoldExpiresAt != "2026-11-13T00:00:00Z" || h.NextRetryAt != nil {
+		t.Errorf("held delivery: Status = %q, HoldExpiresAt = %v, NextRetryAt = %v", h.Status, h.HoldExpiresAt, h.NextRetryAt)
+	}
+	if w.Status != DeliveryAwaitingRetry || w.NextRetryAt == nil || w.HoldExpiresAt != nil {
+		t.Errorf("awaiting_retry delivery: Status = %q, NextRetryAt = %v, HoldExpiresAt = %v", w.Status, w.NextRetryAt, w.HoldExpiresAt)
+	}
+}
+
+func TestEventDeliveryInfoHoldExpiresAt(t *testing.T) {
+	var d EventDeliveryInfo
+	if err := json.Unmarshal([]byte(`{"id":"del_1","status":"held","nextRetryAt":null,"holdExpiresAt":"2026-11-13T00:00:00Z"}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.HoldExpiresAt == nil || *d.HoldExpiresAt != "2026-11-13T00:00:00Z" || d.NextRetryAt != nil {
+		t.Errorf("HoldExpiresAt = %v, NextRetryAt = %v", d.HoldExpiresAt, d.NextRetryAt)
+	}
+}
+
+// The debug view's deliveries use their own names (statusCode, durationMs, attempt, error) and add
+// what the API knows about a failure.
+func TestEventsDebugDeliveries(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"event":   map[string]interface{}{"id": "evt_1", "sourceId": "src_1", "receivedAt": "2026-11-11T12:00:00Z"},
+		"request": map[string]interface{}{"headers": map[string]string{}},
+		"payload": map[string]interface{}{"id": "ch_1"},
+		"deliveries": []interface{}{map[string]interface{}{
+			"id": "del_1", "status": "held", "statusCode": 503, "durationMs": 812, "attempt": 3,
+			"maxAttempts": 8, "nextRetryAt": nil, "holdExpiresAt": "2026-11-13T00:00:00Z",
+			"error": "HTTP 503", "responseBody": "unavailable",
+			"responseHeaders":    map[string]string{"retry-after": "120"},
+			"transformedPayload": map[string]interface{}{"total": 42},
+			"routeId":            "rte_1", "destinationId": "dst_1",
+			"destination": map[string]interface{}{"name": "Orders", "url": "https://example.com/hook", "method": "POST"},
+			"startedAt":   "2026-11-11T12:00:01Z", "completedAt": "2026-11-11T12:05:00Z",
+			"failoverIndex": 0, "parentDeliveryId": nil, "fingerprint": "fp_1",
+			"retryAfter": "120", "clusterCount": 4,
+			"patternHints": []interface{}{map[string]interface{}{
+				"id": "http-503", "category": "availability", "title": "Service unavailable",
+				"hypothesis": "The receiver is overloaded", "suggestedFix": "Back off and retry",
+			}},
+			"routeCircuit": map[string]interface{}{
+				"state": "open", "openedAt": "2026-11-11T12:04:00Z", "cooldownSeconds": 300,
+				"failureThreshold": 5, "consecutiveFailures": 5,
+			},
+		}},
+		"debug": map[string]interface{}{"curlCommand": nil},
+	}})
+	info, err := New("test_key", WithBaseURL(srv.URL)).Events.Debug(context.Background(), "evt_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Deliveries) != 1 {
+		t.Fatalf("Deliveries = %+v", info.Deliveries)
+	}
+	d := info.Deliveries[0]
+	if d.Status != DeliveryHeld || d.StatusCode == nil || *d.StatusCode != 503 || d.DurationMs == nil ||
+		*d.DurationMs != 812 || d.Attempt != 3 || d.MaxAttempts != 8 || d.NextRetryAt != nil ||
+		d.HoldExpiresAt == nil || d.Error == nil || *d.Error != "HTTP 503" {
+		t.Errorf("delivery = %+v", d)
+	}
+	if d.ResponseHeaders["retry-after"] != "120" || d.RetryAfter == nil || *d.RetryAfter != "120" {
+		t.Errorf("ResponseHeaders = %v, RetryAfter = %v", d.ResponseHeaders, d.RetryAfter)
+	}
+	if d.Destination.Name != "Orders" || d.Destination.Method != "POST" || d.RouteID != "rte_1" {
+		t.Errorf("destination = %+v, RouteID = %q", d.Destination, d.RouteID)
+	}
+	if d.Fingerprint == nil || d.ClusterCount == nil || *d.ClusterCount != 4 || d.CompletedAt == nil {
+		t.Errorf("Fingerprint = %v, ClusterCount = %v, CompletedAt = %v", d.Fingerprint, d.ClusterCount, d.CompletedAt)
+	}
+	if len(d.PatternHints) != 1 || d.PatternHints[0].SuggestedFix != "Back off and retry" {
+		t.Errorf("PatternHints = %+v", d.PatternHints)
+	}
+	if d.RouteCircuit == nil || d.RouteCircuit.State != CircuitOpen || d.RouteCircuit.ConsecutiveFailures != 5 {
+		t.Errorf("RouteCircuit = %+v", d.RouteCircuit)
+	}
+	if p, ok := d.TransformedPayload.(map[string]interface{}); !ok || p["total"] != float64(42) {
+		t.Errorf("TransformedPayload = %#v", d.TransformedPayload)
+	}
+}

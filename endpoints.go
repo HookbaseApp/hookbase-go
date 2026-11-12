@@ -247,6 +247,15 @@ type Endpoint struct {
 	IPAllowlistNotes *string `json:"ipAllowlistNotes"`
 	// UseStaticIP reports whether deliveries go through the dedicated static-IP proxy.
 	UseStaticIP FlexBool `json:"useStaticIp"`
+	// HoldOnCircuitOpen reports whether messages wait while the endpoint's circuit breaker is open
+	// (MessageHeld) instead of being dead-lettered. The API defaults it to true. FIFO and polling
+	// endpoints never hold.
+	HoldOnCircuitOpen bool `json:"holdOnCircuitOpen"`
+	// HeldCount is the number of messages held for this endpoint, counted up to 10,000, and
+	// HeldCountCapped is true when there are more. Only Get sets them; List, Create and Update
+	// leave them zero.
+	HeldCount       int  `json:"heldCount"`
+	HeldCountCapped bool `json:"heldCountCapped"`
 
 	// The fields below name response keys the API has never sent. They decoded to the zero value
 	// on every version of this SDK that declared them, so reading one has always told you nothing
@@ -335,6 +344,9 @@ type CreateEndpointParams struct {
 	CircuitSuccessThreshold *int `json:"circuitSuccessThreshold,omitempty"`
 	// CircuitCooldownSeconds is how long an open circuit waits before retrying, 10 to 3600.
 	CircuitCooldownSeconds *int `json:"circuitCooldownSeconds,omitempty"`
+	// HoldOnCircuitOpen holds messages while the circuit breaker is open instead of
+	// dead-lettering them. Nil uses the API's default, true.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 	// SignatureScheme picks how deliveries are signed. The API defaults to
 	// SignatureSchemeHMACSHA256. With SignatureSchemeEd25519 Hookbase generates the key pair and the
 	// response carries only Endpoint.PublicKey, with no Secret.
@@ -443,6 +455,8 @@ type UpdateEndpointParams struct {
 	CircuitFailureThreshold *int    `json:"circuitFailureThreshold,omitempty"`
 	CircuitSuccessThreshold *int    `json:"circuitSuccessThreshold,omitempty"`
 	CircuitCooldownSeconds  *int    `json:"circuitCooldownSeconds,omitempty"`
+	// HoldOnCircuitOpen turns holding messages while the circuit breaker is open on or off.
+	HoldOnCircuitOpen *bool `json:"holdOnCircuitOpen,omitempty"`
 	// SignatureScheme switches the signing scheme. Switching generates a fresh key of the new kind
 	// and ends any rotation grace period, since a receiver cannot verify across schemes.
 	SignatureScheme *SignatureScheme `json:"signatureScheme,omitempty"`

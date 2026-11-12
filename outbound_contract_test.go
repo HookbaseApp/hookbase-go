@@ -538,6 +538,82 @@ func TestStatsSummaryAwaitingRetry(t *testing.T) {
 	}
 }
 
+// --- Holds while an endpoint's circuit is open (0134) and bridged events (0138) ----------------
+
+func TestStatsSummaryHeld(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"data": map[string]int{"pending": 1, "processing": 0, "success": 3, "failed": 0, "awaitingRetry": 0, "exhausted": 0, "dlq": 0, "held": 9, "total": 13},
+	}})
+	s, err := New("test_key", WithBaseURL(srv.URL)).Messages.GetStatsSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Held != 9 || s.Total != 13 {
+		t.Errorf("stats = %+v, want Held 9", s)
+	}
+}
+
+// messagesHeld is only in the response when some of the queued messages were held, and
+// eventVersion only for a versioned event type.
+func TestSendEventMessagesHeld(t *testing.T) {
+	held := sendEventResponse()
+	data := held.body.(map[string]interface{})["data"].(map[string]interface{})
+	data["messagesHeld"] = 1
+	data["eventVersion"] = "2026-10-01"
+	srv := newRecordingServer(t, held, sendEventResponse())
+	client := New("test_key", WithBaseURL(srv.URL))
+
+	res, err := client.Messages.Send(context.Background(), "", &SendMessageParams{EventType: "order.created", Payload: map[string]interface{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.MessagesQueued != 2 || res.MessagesHeld != 1 || res.EventVersion != "2026-10-01" {
+		t.Errorf("MessagesQueued = %d, MessagesHeld = %d, EventVersion = %q", res.MessagesQueued, res.MessagesHeld, res.EventVersion)
+	}
+	res, err = client.Messages.Send(context.Background(), "", &SendMessageParams{EventType: "order.created", Payload: map[string]interface{}{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.MessagesHeld != 0 || res.EventVersion != "" {
+		t.Errorf("MessagesHeld = %d, EventVersion = %q, want zero values when absent", res.MessagesHeld, res.EventVersion)
+	}
+}
+
+// A held message's nextAttemptAt is when its hold ends; the API sends it as holdExpiresAt.
+func TestOutboundMessageHeldAndBridge(t *testing.T) {
+	srv := newRecordingServer(t, cannedResponse{body: map[string]interface{}{
+		"data": map[string]interface{}{
+			"id": "m1", "eventId": "evt_1", "status": "held", "attempts": 3, "maxAttempts": 8,
+			"holdExpiresAt": "2026-11-12T00:00:00Z", "eventVersion": "v2", "deliveredEventVersion": "v1",
+			"bridge": map[string]interface{}{"inboundEventId": "evt_in", "deliveryId": "del_1", "hop": 1},
+		},
+	}})
+	client := New("test_key", WithBaseURL(srv.URL))
+	m, err := client.Messages.Get(context.Background(), "app_1", "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Status != MessageHeld || m.HoldExpiresAt == nil || *m.HoldExpiresAt != "2026-11-12T00:00:00Z" {
+		t.Errorf("Status = %q, HoldExpiresAt = %v", m.Status, m.HoldExpiresAt)
+	}
+	if m.DeliveredEventVersion == nil || *m.DeliveredEventVersion != "v1" {
+		t.Errorf("DeliveredEventVersion = %v", m.DeliveredEventVersion)
+	}
+	if m.Bridge == nil || m.Bridge.InboundEventID != "evt_in" || m.Bridge.DeliveryID == nil ||
+		*m.Bridge.DeliveryID != "del_1" || m.Bridge.Hop == nil || *m.Bridge.Hop != 1 {
+		t.Errorf("Bridge = %+v", m.Bridge)
+	}
+
+	// A message no bridge published reads bridge: null.
+	var plain OutboundMessage
+	if err := json.Unmarshal([]byte(`{"id":"m2","status":"success","holdExpiresAt":null,"bridge":null}`), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.Bridge != nil || plain.HoldExpiresAt != nil {
+		t.Errorf("Bridge = %+v, HoldExpiresAt = %v, want nil", plain.Bridge, plain.HoldExpiresAt)
+	}
+}
+
 func TestExportCSVAndJSON(t *testing.T) {
 	csv := "id,eventType\nevt_1,\"order.created\""
 	srv := newRecordingServer(t,

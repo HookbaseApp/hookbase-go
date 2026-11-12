@@ -9,14 +9,21 @@ import (
 type DeliveryStatus string
 
 const (
-	// DeliveryPending covers both a delivery not yet sent and one that failed and is waiting to
-	// be retried (NextRetryAt is then set).
+	// DeliveryPending covers both a delivery not yet sent and one that failed and is waiting on a
+	// retry a minute or less away (NextRetryAt is then set). Listing with Status pending also
+	// returns DeliveryAwaitingRetry and DeliveryHeld deliveries.
 	DeliveryPending      DeliveryStatus = "pending"
 	DeliveryDelivered    DeliveryStatus = "delivered"
 	DeliveryFailed       DeliveryStatus = "failed"
 	DeliveryFailedOver   DeliveryStatus = "failed_over"
 	DeliverySchemaFailed DeliveryStatus = "schema_failed"
 	DeliveryThrottled    DeliveryStatus = "throttled"
+	// DeliveryAwaitingRetry is a failed delivery waiting on a retry more than a minute away.
+	// NextRetryAt says when it is due.
+	DeliveryAwaitingRetry DeliveryStatus = "awaiting_retry"
+	// DeliveryHeld is a delivery held while its route's circuit breaker is open (the route's
+	// HoldOnCircuitOpen). It is sent once the circuit recovers, or dead-lettered at HoldExpiresAt.
+	DeliveryHeld DeliveryStatus = "held"
 
 	// Deprecated: no delivery has this status. A successful delivery is DeliveryDelivered.
 	DeliverySuccess DeliveryStatus = "success"
@@ -53,9 +60,13 @@ type Delivery struct {
 	Duration *int `json:"latencyMs"`
 	// DeliveredAt is set once the destination accepted the delivery; nil otherwise.
 	DeliveredAt *string `json:"deliveredAt"`
+	// NextRetryAt is when the next attempt is due; nil while the delivery is held.
 	NextRetryAt *string `json:"nextRetryAt"`
-	CreatedAt   string  `json:"createdAt"`
-	UpdatedAt   *string `json:"updatedAt"`
+	// HoldExpiresAt is set only while the delivery is held (DeliveryHeld): if the circuit has not
+	// recovered by then, the delivery is dead-lettered.
+	HoldExpiresAt *string `json:"holdExpiresAt"`
+	CreatedAt     string  `json:"createdAt"`
+	UpdatedAt     *string `json:"updatedAt"`
 	// DestinationName is set by List and Get.
 	DestinationName string `json:"destinationName"`
 	// DestinationURL is set by Get only.
