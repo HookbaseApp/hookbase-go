@@ -3,6 +3,7 @@ package hookbase
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"sort"
 	"testing"
 )
@@ -24,7 +25,10 @@ var (
 		"rejectInvalidSignatures", "rateLimitPerMinute", "ipFilterMode", "ipAllowlist",
 		"ipDenylist", "encryptFields", "maskFields", "dedupEnabled", "dedupStrategy",
 		"dedupWindowHours", "dedupCustomHeader", "transientMode", "allowedMethods",
+		"catalogProvider",
 	}
+	// No catalogProvider: it is set on create only, and the update schema is strict, so sending it
+	// in a PATCH is a 400.
 	updateSourceFields = []string{
 		"name", "description", "provider", "isActive", "signingSecret", "verifyToken",
 		"rejectInvalidSignatures", "rateLimitPerMinute", "ipFilterMode", "ipAllowlist",
@@ -74,7 +78,7 @@ func TestCreateSourceParamsFieldNames(t *testing.T) {
 		IPFilterMode: &mode, IPAllowlist: []string{"203.0.113.0/24"}, IPDenylist: []string{"198.51.100.1"},
 		EncryptFields: []string{"$.a"}, MaskFields: []string{"$.b"},
 		DedupEnabled: &b, DedupStrategy: &strategy, DedupWindowHours: &i, DedupCustomHeader: &s,
-		TransientMode: &b, AllowedMethods: []string{"POST"},
+		TransientMode: &b, AllowedMethods: []string{"POST"}, CatalogProvider: Ptr("salesforce"),
 	}
 	want := append([]string(nil), createSourceFields...)
 	sort.Strings(want)
@@ -100,6 +104,54 @@ func TestUpdateSourceParamsFieldNames(t *testing.T) {
 	sort.Strings(want)
 	if got := jsonKeys(t, params); !equalStrings(got, want) {
 		t.Errorf("UpdateSourceParams sends %v, want %v", got, want)
+	}
+}
+
+// catalogProvider cannot be changed after creation, so UpdateSourceParams must not grow a field for
+// it: the API's update schema is strict and would answer 400.
+func TestUpdateSourceParamsHasNoCatalogProvider(t *testing.T) {
+	if _, ok := reflect.TypeOf(UpdateSourceParams{}).FieldByName("CatalogProvider"); ok {
+		t.Error("UpdateSourceParams has a CatalogProvider field; PATCH /api/sources/:id rejects catalogProvider")
+	}
+}
+
+// The API sends the four list settings as JSON arrays. Before api #131 it sent them as the JSON
+// text of the array (ipAllowlist: "[\"203.0.113.7\"]"), which a []string cannot decode: Get and
+// List failed with "cannot unmarshal string" on any source that had one of them set. This pins the
+// array form, which is what the fields are typed for, along with catalogProvider.
+func TestSourceDecodesListFieldsAsArrays(t *testing.T) {
+	body := `{"id":"src_1","name":"n","slug":"s","provider":"custom","ipFilterMode":"allowlist",` +
+		`"ipAllowlist":["203.0.113.7","198.51.100.0/24"],"ipDenylist":["192.0.2.1"],` +
+		`"encryptFields":["$.card.number"],"maskFields":["$.email","$.phone"],` +
+		`"catalogProvider":"salesforce"}`
+	var src Source
+	if err := json.Unmarshal([]byte(body), &src); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !equalStrings(src.IPAllowlist, []string{"203.0.113.7", "198.51.100.0/24"}) {
+		t.Errorf("IPAllowlist = %v", src.IPAllowlist)
+	}
+	if !equalStrings(src.IPDenylist, []string{"192.0.2.1"}) {
+		t.Errorf("IPDenylist = %v", src.IPDenylist)
+	}
+	if !equalStrings(src.EncryptFields, []string{"$.card.number"}) {
+		t.Errorf("EncryptFields = %v", src.EncryptFields)
+	}
+	if !equalStrings(src.MaskFields, []string{"$.email", "$.phone"}) {
+		t.Errorf("MaskFields = %v", src.MaskFields)
+	}
+	if src.CatalogProvider == nil || *src.CatalogProvider != "salesforce" {
+		t.Errorf("CatalogProvider = %v, want salesforce", src.CatalogProvider)
+	}
+
+	// A source made without a catalog entry reads back null, and empty lists as [].
+	body = `{"id":"src_2","ipAllowlist":[],"ipDenylist":[],"encryptFields":[],"maskFields":[],"catalogProvider":null}`
+	src = Source{}
+	if err := json.Unmarshal([]byte(body), &src); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if src.CatalogProvider != nil || len(src.IPAllowlist) != 0 {
+		t.Errorf("CatalogProvider = %v, IPAllowlist = %v, want nil and empty", src.CatalogProvider, src.IPAllowlist)
 	}
 }
 
