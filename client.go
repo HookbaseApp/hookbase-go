@@ -24,20 +24,24 @@ import (
 // API as 1.5.0.
 const sdkVersion = "1.14.0"
 
-// secretField matches a JSON member whose key is secret or ends in Secret (signingSecret,
-// previousSecret, clientSecret) and whose value is a string. The key is matched case-sensitively,
-// as the API names it, so hasSigningSecret (a boolean) and secretPrefix are not touched. It is
-// compiled on first use, so a client without WithDebug never pays for it.
-var secretField = sync.OnceValue(func() *regexp.Regexp {
-	return regexp.MustCompile(`"(secret|[A-Za-z0-9_]*Secret)"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
+// credentialField matches a JSON member that carries a credential: its key is exactly secret,
+// token, password, key, Authorization or authorization, or ends in Secret, Token, Password or Key
+// (signingSecret, clientSecret, secretAccessKey, verifyToken, authToken, apiKey, privateKey, and
+// header names such as X-Api-Key), and its value is a string. Keys are matched case-sensitively,
+// as the API names them. Only string values are replaced, so hasSigningSecret (a boolean) and a
+// null secret still show; secretPrefix doesn't match. A few non-secrets such as publicKey and
+// idempotencyKey are redacted too, which is fine for a debug log. The pattern is compiled on
+// first use, so a client without WithDebug never pays for it.
+var credentialField = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`"(secret|token|password|key|Authorization|authorization|[A-Za-z0-9_-]*(?:Secret|Token|Password|Key))"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
 })
 
-// redactSecrets returns body for the debug log with the value of every secret field replaced, so
-// WithDebug doesn't write signing secrets (Destinations.Create, RevealSecret, RotateSecret, and
-// the source and endpoint secret calls) or ones sent in a request to the log. It runs only when
-// debug logging is on.
+// redactSecrets returns body for the debug log with the value of every credential field
+// replaced, so WithDebug doesn't write signing secrets (Destinations.Create, RevealSecret,
+// RotateSecret, and the source and endpoint secret calls), API keys, tokens or the credentials
+// sent in a request to the log. It runs only when debug logging is on.
 func redactSecrets(body []byte) string {
-	return secretField().ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
+	return credentialField().ReplaceAllString(string(body), `"$1"$2"[REDACTED]"`)
 }
 
 type transport struct {

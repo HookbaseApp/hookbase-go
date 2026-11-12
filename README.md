@@ -416,8 +416,10 @@ Every change is an addition; no signature or existing field changed.
   and `OutboundMessage.Bridge`.
 - `EventDebugInfo.Deliveries`.
 - `CatalogProvider` on `Source` and `CreateSourceParams`.
-- `WithDebug` redacts secret values in the request and response bodies it logs: any JSON key
-  named `secret` or ending in `Secret`, such as `signingSecret` and `clientSecret`.
+- `WithDebug` redacts credentials in the request and response bodies it logs: the string value
+  of any JSON key named `secret`, `token`, `password`, `key` or `Authorization`, or ending in
+  `Secret`, `Token`, `Password` or `Key` (`signingSecret`, `secretAccessKey`, `verifyToken`,
+  `apiKey`, `X-Api-Key`, ...).
 
 If your code switches on a delivery or message status, add cases for the new ones: a delivery
 that used to read `pending` between retries may now read `awaiting_retry` or `held`.

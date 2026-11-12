@@ -289,9 +289,10 @@ func TestDebugLogging(t *testing.T) {
 	}
 }
 
-// WithDebug logs request and response bodies, and several of them carry secrets: a destination's
-// signingSecret (Create, RevealSecret, RotateSecret), a source's, an endpoint's secret and an
-// OAuth clientSecret. Their values are redacted, in requests and responses alike.
+// WithDebug logs request and response bodies, and several of them carry credentials: a
+// destination's signingSecret (Create, RevealSecret, RotateSecret), a source's, an endpoint's
+// secret, an OAuth clientSecret, a new API key, and the auth config and headers a destination
+// sends to its receiver. Their values are redacted, in requests and responses alike.
 func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	const (
 		sent     = "whsec_sentInTheRequest"
@@ -304,6 +305,9 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 		}}},
 		cannedResponse{body: `{"signingSecret" : "` + created + `", "previousSecret":"` + previous + `",` +
 			`"secret":"whsec_endpoint","clientSecret":"cs_live","previousSecretExpiresAt":"2026-11-12T00:00:00Z"}`},
+		cannedResponse{body: map[string]interface{}{"destination": map[string]interface{}{
+			"id": "dst_2", "hasSigningSecret": true, "signingSecret": "whsec_newDestination",
+		}}},
 	)
 
 	var buf bytes.Buffer
@@ -319,18 +323,27 @@ func TestDebugLoggingRedactsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.Destinations.Create(context.Background(), &CreateDestinationParams{
+		Name: "d", URL: "https://example.com/hook", AuthType: Ptr(AuthBasic),
+		AuthConfig: map[string]interface{}{"username": "ops", "password": "pw_basic"},
+		Headers:    map[string]string{"Authorization": "Bearer hdr_bearer", "X-Api-Key": "hdr_apikey", "X-Trace": "t1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	logged := buf.String()
-	for _, secret := range []string{sent, created, "whsec_previous", "whsec_endpoint", "cs_live"} {
+	for _, secret := range []string{sent, created, "whsec_previous", "whsec_endpoint", "cs_live",
+		"pw_basic", "hdr_bearer", "hdr_apikey", "whsec_newDestination"} {
 		if strings.Contains(logged, secret) {
 			t.Errorf("debug log contains the secret %q:\n%s", secret, logged)
 		}
 	}
 	for _, want := range []string{
 		`"signingSecret":"[REDACTED]"`, `"signingSecret" : "[REDACTED]"`, `"previousSecret":"[REDACTED]"`,
-		`"secret":"[REDACTED]"`, `"clientSecret":"[REDACTED]"`,
+		`"secret":"[REDACTED]"`, `"clientSecret":"[REDACTED]"`, `"password":"[REDACTED]"`,
+		`"Authorization":"[REDACTED]"`, `"X-Api-Key":"[REDACTED]"`,
 		// Not secrets: kept as they are.
 		`"hasSigningSecret":true`, `"secretPrefix":"whsec_ret"`, `"previousSecretExpiresAt":"2026-11-12T00:00:00Z"`,
-		`"name":"n"`,
+		`"name":"n"`, `"username":"ops"`, `"X-Trace":"t1"`,
 	} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("debug log is missing %s:\n%s", want, logged)
@@ -350,10 +363,22 @@ func TestRedactSecrets(t *testing.T) {
 		{`{"secret":"s1"}`, `{"secret":"[REDACTED]"}`},
 		{`{"a":{"webhookSecret":"x\"y","n":1}}`, `{"a":{"webhookSecret":"[REDACTED]","n":1}}`},
 		{`[{"signingSecret":"a"},{"signingSecret":"b"}]`, `[{"signingSecret":"[REDACTED]"},{"signingSecret":"[REDACTED]"}]`},
+		// The exact names.
+		{`{"token":"t","password":"p","key":"k","Authorization":"Bearer x","authorization":"Basic y"}`,
+			`{"token":"[REDACTED]","password":"[REDACTED]","key":"[REDACTED]","Authorization":"[REDACTED]","authorization":"[REDACTED]"}`},
+		// The suffixes: S3 and OCI credentials, verify and auth tokens, API keys, OAuth secrets.
+		{`{"accessKeyId":"AKIA","secretAccessKey":"z","privateKey":"pk","verifyToken":"vt","authToken":"at","apiKey":"ak","clientSecret":"cs","dbPassword":"dp"}`,
+			`{"accessKeyId":"AKIA","secretAccessKey":"[REDACTED]","privateKey":"[REDACTED]","verifyToken":"[REDACTED]","authToken":"[REDACTED]","apiKey":"[REDACTED]","clientSecret":"[REDACTED]","dbPassword":"[REDACTED]"}`},
+		// Header names, hyphens included.
+		{`{"headers":{"X-Api-Key":"k","X-Auth-Token":"t","X-Trace":"keep"}}`,
+			`{"headers":{"X-Api-Key":"[REDACTED]","X-Auth-Token":"[REDACTED]","X-Trace":"keep"}}`},
+		// Over-redacting a non-secret is accepted.
+		{`{"publicKey":"pub","idempotencyKey":"idem"}`, `{"publicKey":"[REDACTED]","idempotencyKey":"[REDACTED]"}`},
 		// Case-sensitive, string values only, whole keys only.
-		{`{"Secret":"x"}`, `{"Secret":"[REDACTED]"}`},
-		{`{"SECRET":"x","secrets":"y","secretAccessKey":"z"}`, `{"SECRET":"x","secrets":"y","secretAccessKey":"z"}`},
-		{`{"hasSigningSecret":true,"signingSecret":null}`, `{"hasSigningSecret":true,"signingSecret":null}`},
+		{`{"Secret":"x","Token":"y","Key":"z"}`, `{"Secret":"[REDACTED]","Token":"[REDACTED]","Key":"[REDACTED]"}`},
+		{`{"SECRET":"x","secrets":"y","Password1":"z","keyPrefix":"whr_ab","tokenType":"Bearer","secretPrefix":"whsec_ab"}`,
+			`{"SECRET":"x","secrets":"y","Password1":"z","keyPrefix":"whr_ab","tokenType":"Bearer","secretPrefix":"whsec_ab"}`},
+		{`{"hasSigningSecret":true,"signingSecret":null,"apiKey":null,"maxKey":3}`, `{"hasSigningSecret":true,"signingSecret":null,"apiKey":null,"maxKey":3}`},
 		// A key name inside a string value is not a key.
 		{`{"note":"the \"secret\": \"kept\""}`, `{"note":"the \"secret\": \"kept\""}`},
 		{`not json`, `not json`},
