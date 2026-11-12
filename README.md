@@ -61,7 +61,7 @@ client := hookbase.New("your_api_key",
 | `client.Routes` | Routing rules connecting sources to destinations |
 | `client.Events` | Received webhook events |
 | `client.Deliveries` | Delivery attempts and replays |
-| `client.Transforms` | Payload transformations (JSONata, JavaScript, Liquid, XSLT) |
+| `client.Transforms` | Payload transformations (JSONata, JavaScript, TypeScript, Liquid, XSLT, JMESPath, JSONLogic, jq). `Engines` lists the languages this deployment supports |
 | `client.Filters` | Conditional routing filters |
 | `client.Schemas` | JSON Schema validation |
 | `client.APIKeys` | API key management (List, Get, Delete; Create and RotateSecret need a dashboard session, not an API key) |
@@ -165,6 +165,68 @@ goes back as `ListEventsParams.Cursor`. Deliveries page by `Offset`; advance it 
 ```go
 result, err := client.Deliveries.Replay(ctx, "del_abc123")
 ```
+
+`ReplayWithParams` replays with edits: a changed payload, another destination, a one-off
+transform or extra headers. `PayloadPatch` is an RFC 7386 merge patch on the stored payload (a
+`null` value removes the key), which suits sources that mask or encrypt fields. Set it or
+`ModifiedPayload`, not both:
+
+```go
+result, err := client.Deliveries.ReplayWithParams(ctx, "del_abc123", &hookbase.ReplayParams{
+    PayloadPatch:        json.RawMessage(`{"order":{"note":null}}`),
+    DestinationOverride: hookbase.Ptr("backup-endpoint"), // ID or slug
+    HeadersOverride:     map[string]string{"X-Replay": "1"},
+})
+fmt.Println(result.DeliveryID, result.Modified, result.TargetDestinationID)
+```
+
+### Destination Signing Secrets
+
+Every HTTP destination signs its deliveries with a `whsec_` secret, in the same Standard Webhooks
+format outbound endpoints use, so the receiver can verify them with `hookbase.NewWebhook`. `Create`
+returns the secret once in `Destination.SigningSecret`; after that, read it with `RevealSecret`.
+`RotateSecret` issues a new one, and the old one keeps signing alongside it for the grace period
+(nil means the API's default of an hour):
+
+```go
+secret, err := client.Destinations.RevealSecret(ctx, "dst_123")
+rotated, err := client.Destinations.RotateSecret(ctx, "dst_123", hookbase.Ptr(600))
+```
+
+### Bridge Destinations
+
+A bridge destination publishes each inbound delivery as an outbound event, sent to the endpoints
+subscribed to its event type. The event type is fixed, or read from a payload field. `Test` on a
+bridge is a dry run: it publishes nothing and reports the event type and how many endpoints would
+get it.
+
+```go
+bridge, err := client.Destinations.Create(ctx, &hookbase.CreateDestinationParams{
+    Name: "Stripe to customers",
+    Type: hookbase.Ptr(hookbase.DestinationBridge),
+    Config: hookbase.BridgeConfig{
+        EventTypeSource: hookbase.BridgeEventTypeField,
+        EventTypeField:  "type",
+        EventTypePrefix: "stripe.",
+    },
+})
+dry, err := client.Destinations.TestWithParams(ctx, bridge.ID, &hookbase.TestDestinationParams{
+    Payload: map[string]interface{}{"type": "charge.succeeded"},
+})
+fmt.Println(*dry.EventType, dry.EventTypeExists, dry.MatchingEndpoints)
+```
+
+### Holds While a Circuit Is Open
+
+While a route's or an endpoint's circuit breaker is open, its deliveries are held
+(`DeliveryHeld`, `MessageHeld`) instead of failing, and are sent once it recovers. A held delivery
+has `HoldExpiresAt` set instead of `NextRetryAt`; one still held then is dead-lettered. Turn it off
+per route or endpoint with `HoldOnCircuitOpen: hookbase.Ptr(false)`. `Routes.Get` and
+`Endpoints.Get` report `HeldCount` (capped at 10,000, with `HeldCountCapped`).
+
+A failed delivery whose next retry is more than a minute away is `DeliveryAwaitingRetry`. Listing
+deliveries with `Status: hookbase.Ptr(hookbase.DeliveryPending)` also returns awaiting-retry and
+held deliveries.
 
 ### Bulk Replay
 
@@ -333,6 +395,24 @@ if err != nil {
   4s, ... capped at 10s, plus up to 1s of random jitter.
 - Waits between attempts (backoff and `Retry-After`) stop as soon as `ctx` is done, returning a
   `*TimeoutError`.
+
+## What's New in 1.14.0
+
+Every change is an addition; no signature or existing field changed.
+
+- `Transforms.Engines`.
+- `Deliveries.ReplayWithParams` and `ReplayParams`; `ReplayResult` reports which edits applied.
+- Destinations: `RevealSecret`, `RotateSecret`, `TestWithParams`, `HasSigningSecret` and
+  `SigningSecret`, the `bridge` type with `BridgeConfig`, and the dry-run fields on
+  `DestinationTestResult`. A destination's `Method` may also be GET or DELETE.
+- Holds: `DeliveryHeld`, `DeliveryAwaitingRetry`, `MessageHeld`, `HoldExpiresAt`,
+  `HoldOnCircuitOpen`, `HeldCount`, `SendMessageResponse.MessagesHeld`, `OutboundStatsSummary.Held`,
+  and `OutboundMessage.Bridge`.
+- `EventDebugInfo.Deliveries`.
+- `CatalogProvider` on `Source` and `CreateSourceParams`.
+
+If your code switches on a delivery or message status, add cases for the new ones: a delivery
+that used to read `pending` between retries may now read `awaiting_retry` or `held`.
 
 ## License
 

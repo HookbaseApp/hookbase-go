@@ -453,7 +453,7 @@ func TestUserAgentVersion(t *testing.T) {
 
 	client := New("test_key", WithBaseURL(server.URL))
 	_ = client.Sources.Delete(context.Background(), "src_1")
-	if ua != "hookbase-go/1.13.0" {
+	if ua != "hookbase-go/1.14.0" {
 		t.Errorf("unexpected User-Agent %q", ua)
 	}
 }
